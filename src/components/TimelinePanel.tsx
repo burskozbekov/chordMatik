@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Button } from "@heroui/react";
 import { motion } from "motion/react";
 import { useAppState } from "../state/AppState";
@@ -89,27 +89,36 @@ export function TimelinePanel({ transpose = 0, useFlats = false }: TimelinePanel
             </div>
           )}
           {sections.length > 1 && (
-            <div className="flex h-5 w-full gap-px overflow-hidden rounded-lg" title="Song sections (click to jump)">
-              {sections.map((s, i) => {
-                const frac = (s.endSec - s.startSec) / Math.max(0.001, analysis.durationSec);
-                const tint = 10 + ((s.label.charCodeAt(0) - 65) % 6) * 12;
-                return (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => engine.seek(s.startSec)}
-                    title={`${s.label} · ${Math.round(s.startSec)}s`}
-                    className="grid place-items-center text-[10px] font-bold text-foreground/80 transition-opacity hover:opacity-80"
-                    style={{
-                      flexGrow: frac,
-                      flexBasis: 0,
-                      background: `color-mix(in oklab, var(--accent) ${tint}%, transparent)`,
-                    }}
-                  >
-                    {frac > 0.04 ? s.label : ""}
-                  </button>
-                );
-              })}
+            <div className="flex items-center gap-1.5">
+              <span
+                className="shrink-0 text-[9px] font-semibold uppercase tracking-wider text-muted"
+                title="Repeating parts of the song, detected from the chords — same letter = same material. Click to jump."
+              >
+                Sections
+              </span>
+              <div className="relative flex h-5 min-w-0 flex-1 gap-px overflow-hidden rounded-lg">
+                {sections.map((s, i) => {
+                  const frac = (s.endSec - s.startSec) / Math.max(0.001, analysis.durationSec);
+                  const tint = 10 + ((s.label.charCodeAt(0) - 65) % 6) * 12;
+                  return (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => engine.seek(s.startSec)}
+                      title={`Part ${s.label} · ${Math.round(s.startSec)}s — click to jump`}
+                      className="grid place-items-center text-[10px] font-bold text-foreground/80 transition-opacity hover:opacity-80"
+                      style={{
+                        flexGrow: frac,
+                        flexBasis: 0,
+                        background: `color-mix(in oklab, var(--accent) ${tint}%, transparent)`,
+                      }}
+                    >
+                      {frac > 0.04 ? s.label : ""}
+                    </button>
+                  );
+                })}
+                <SectionPlayhead engine={engine} durationSec={analysis.durationSec} />
+              </div>
             </div>
           )}
           <ChordTimeline
@@ -131,6 +140,33 @@ export function TimelinePanel({ transpose = 0, useFlats = false }: TimelinePanel
         <Analyzing />
       )}
     </section>
+  );
+}
+
+/** Thin moving position marker over the sections strip (rAF, no re-renders). */
+function SectionPlayhead({
+  engine,
+  durationSec,
+}: {
+  engine: ReturnType<typeof useAppState>["engine"];
+  durationSec: number;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(
+    () =>
+      engine.subscribe((t) => {
+        const el = ref.current;
+        if (!el || !(durationSec > 0)) return;
+        el.style.left = `${Math.min(100, Math.max(0, (t / durationSec) * 100))}%`;
+      }),
+    [engine, durationSec],
+  );
+  return (
+    <div
+      ref={ref}
+      className="pointer-events-none absolute inset-y-0 w-0.5 rounded-full bg-foreground/60"
+      style={{ left: 0 }}
+    />
   );
 }
 

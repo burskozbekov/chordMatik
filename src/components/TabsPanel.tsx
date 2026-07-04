@@ -809,17 +809,6 @@ export function TabsPanel({ title }: { title: string }) {
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <h3 className="shrink-0 text-sm font-semibold text-foreground">Tabs</h3>
-          {!customTab && result && (
-            <HelpDot
-              text={[
-                `Pick: ${result.artist} — ${result.title} (Songsterr #${result.songId})`,
-                `Candidates: ${result.candidates?.length ?? 1}`,
-                match ? `Chord agreement: ${Math.round(match.sChord * 100)}%${match.shift ? ` (${match.shift > 6 ? match.shift - 12 : match.shift} st offset)` : ""}` : "Chord agreement: not scored",
-                `Bass: ${result.bass ? "real Songsterr track" : "none — using generated/AI"}`,
-                `Showing: ${which}${which === "bass" ? ` via ${effBass}` : ""}`,
-              ].join("\n")}
-            />
-          )}
           {!customTab &&
             (editingTitle ? (
               <input
@@ -1049,20 +1038,29 @@ export function TabsPanel({ title }: { title: string }) {
             )
           ) : (
             <>
-              {/* Standard notation toggle (off = tab for guitar/bass). */}
+              {/* Tab ↔ standard-notation view, same segmented style as the rest. */}
               {(which === "guitar" || which === "bass") && (
-                <button
-                  type="button"
-                  onClick={() => setNotation((n) => !n)}
-                  title="Show standard notation alongside the tab"
-                  className={`rounded-lg border px-2 py-1 text-xs font-semibold transition-colors ${
-                    notation
-                      ? "border-[var(--accent)]/60 bg-[var(--accent)]/15 text-[var(--accent)]"
-                      : "border-border/70 bg-surface/50 text-muted hover:text-foreground"
-                  }`}
-                >
-                  ♪ Notation
-                </button>
+                <div className="flex items-center gap-0.5 rounded-xl border border-border/70 bg-surface/50 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setNotation(false)}
+                    className={`rounded-lg px-3 py-1 text-xs font-semibold transition-colors ${
+                      !notation ? "chord-gradient text-[#06351f] shadow-sm" : "text-muted hover:text-foreground"
+                    }`}
+                  >
+                    Tab
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNotation(true)}
+                    title="Standard notation alongside the tab"
+                    className={`rounded-lg px-3 py-1 text-xs font-semibold transition-colors ${
+                      notation ? "chord-gradient text-[#06351f] shadow-sm" : "text-muted hover:text-foreground"
+                    }`}
+                  >
+                    ♪ Notes
+                  </button>
+                </div>
               )}
               {present.length >= 2 && (
                 <div className="flex items-center gap-0.5 rounded-xl border border-border/70 bg-surface/50 p-0.5">
@@ -1082,14 +1080,16 @@ export function TabsPanel({ title }: { title: string }) {
               )}
             </>
           )}
-          <button
-            type="button"
-            onClick={loadCustomTab}
-            title="Open your own Guitar Pro (.gp/.gp5) or MusicXML file"
-            className="rounded-lg border border-border/70 bg-surface/50 px-2 py-1 text-xs font-semibold text-muted transition-colors hover:text-foreground"
-          >
-            📁 File
-          </button>
+          <div className="flex items-center rounded-xl border border-border/70 bg-surface/50 p-0.5">
+            <button
+              type="button"
+              onClick={loadCustomTab}
+              title="Open your own Guitar Pro (.gp/.gp5) or MusicXML file"
+              className="rounded-lg px-3 py-1 text-xs font-semibold text-muted transition-colors hover:text-foreground"
+            >
+              📁 File
+            </button>
+          </div>
         </div>
       </div>
 

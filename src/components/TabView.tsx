@@ -140,14 +140,29 @@ export function TabView({
         },
       };
 
+      let lastT = -1;
       unsub = engineRef.current.subscribe((t: number) => {
         const now = Date.now();
-        if (now - lastPush < 40) return;
+        // A seek (R, chord click, lyric click…) — never throttle it, and scroll
+        // the tab view to the cursor even while paused (AlphaTab only auto-
+        // scrolls during playback).
+        const jumped = lastT >= 0 && Math.abs(t - lastT) > 1.5;
+        lastT = t;
+        if (!jumped && now - lastPush < 40) return;
         lastPush = now;
         try {
           output.updatePosition(mapTime(t) * 1000);
         } catch {
           /* */
+        }
+        if (jumped) {
+          window.setTimeout(() => {
+            try {
+              apiRef.current?.scrollToCursor();
+            } catch {
+              /* */
+            }
+          }, 60);
         }
       });
 

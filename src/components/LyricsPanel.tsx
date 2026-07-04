@@ -186,13 +186,13 @@ export function LyricsPanel({ title }: { title: string }) {
               key={i}
               data-line={i}
               onClick={() => engine.seek(Math.max(0, l.time + offset))}
-              title="Jump here"
-              className={`cursor-pointer py-1 transition-all duration-300 ${
+              title="Jump the song here"
+              className={`cursor-pointer rounded-lg py-1 transition-all duration-300 hover:bg-[color-mix(in_oklab,var(--accent)_10%,transparent)] ${
                 i === activeIdx
                   ? "text-xl font-bold text-[var(--accent)]"
                   : i < activeIdx
-                    ? "text-sm text-muted/45"
-                    : "text-sm text-muted"
+                    ? "text-sm text-muted/45 hover:text-foreground"
+                    : "text-sm text-muted hover:text-foreground"
               }`}
             >
               {l.text || "♪"}
