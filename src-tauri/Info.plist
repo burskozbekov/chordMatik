@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Tauri merges this into the generated Info.plist (dev + bundle). The usage
+     strings are mandatory on macOS: without NSCameraUsageDescription the app
+     hard-crashes the moment the webcam is requested. -->
+<plist version="1.0">
+<dict>
+  <key>NSCameraUsageDescription</key>
+  <string>chordMatik shows a live self-view and can record you playing along to the song.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>chordMatik records your microphone together with your webcam video while you play.</string>
+</dict>
+</plist>

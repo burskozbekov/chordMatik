@@ -1,0 +1,66 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "chordMatik",
+  "version": "0.1.0",
+  "identifier": "com.chordmatik.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "chordMatik",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 920,
+        "minHeight": 600,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false,
+        "titleBarStyle": "Visible",
+        "backgroundColor": "#E3F5E8"
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI2QUJENzZDQThEQjY3MwpSV1J6dG8zS2RyMXFBb0o3OStReEZwRkpVZzFYNTliOFhBbTZTbTdDS2N2LzZrdEkycVFiUzErdAo=",
+      "endpoints": [
+        "https://github.com/burskozbekov/chordMatik/releases/latest/download/latest.json"
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": "all",
+    "category": "Music",
+    "resources": {
+      "resources/models/btc.onnx": "models/btc.onnx",
+      "resources/models/btc.meta.json": "models/btc.meta.json",
+      "resources/models/chordnet.onnx": "models/chordnet.onnx"
+    },
+    "macOS": {
+      "entitlements": "./Entitlements.plist"
+    },
+    "shortDescription": "On-device automatic chord recognition for songs you own.",
+    "longDescription": "chordMatik analyzes local audio files fully on-device, extracts the chord progression with timing, and displays an interactive, synced chord timeline with diagrams, transpose/capo, and practice tools.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

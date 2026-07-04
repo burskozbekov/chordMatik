@@ -1,0 +1,83 @@
+[package]
+name = "chordmatik"
+version = "0.1.0"
+description = "On-device automatic chord recognition for songs you own."
+authors = ["chordMatik"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "chordmatik_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# `protocol-asset` lets the webview play local files via convertFileSrc().
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+# Auto-update: check GitHub Releases on startup, install signed updates.
+tauri-plugin-updater = "2"
+# Save the webcam recording to a user-chosen path (plugin-fs writeFile).
+tauri-plugin-fs = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Fetch guitar/bass tabs from Songsterr (gzip JSON over HTTPS), backend-side to
+# dodge CORS. rustls to match the existing TLS backend in the tree.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "gzip", "json", "query"] }
+# Sign Ultimate Guitar's mobile-API requests (X-UG-API-KEY = md5 of client id + date).
+md5 = "0.7"
+
+# --- Audio decode + DSP (Phase 1+) ---
+# symphonia: pure-Rust demux/decode for mp3, wav, m4a/aac/alac, flac, ogg/vorbis.
+symphonia = { version = "0.5", default-features = false, features = [
+  "mp3", "aac", "alac", "isomp4", "flac", "ogg", "vorbis", "wav", "pcm", "adpcm",
+] }
+# rubato: high-quality sample-rate conversion to the analysis rate.
+rubato = "0.16"
+# rustfft: FFT backbone for the Constant-Q Transform (Phase 3).
+rustfft = "6"
+# hound: tiny WAV writer. Cross-platform so the capture module compiles
+# everywhere; symphonia reads the WAV back in the analyze path.
+hound = "3.5"
+
+# --- macOS system-audio capture ("record chords from the playing video") ---
+# screencapturekit: safe bindings to ScreenCaptureKit. Captures the audio
+# already playing on the Mac and mixes it to a WAV the existing pipeline
+# analyzes — it never downloads or extracts a remote stream.
+[target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = "8"
+
+# Make `tauri dev` (debug) analysis fast: optimize the DSP-heavy crate + all
+# deps even in dev, so chord analysis takes ~1s instead of tens of seconds.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[features]
+default = []
+# Enable the BTC ONNX inference path (requires ONNX Runtime + a btc.onnx model).
+# The built-in chroma engine works without this; see src/ml/.
+btc = ["dep:ort", "dep:ndarray"]
+
+[dependencies.ort]
+# Pinned exactly: rc.11+ bump ndarray to 0.17 (mismatch with our 0.16) + change
+# the download-binaries/TLS + run/extract API that btc.rs targets. rc.10 is the
+# version this code was written against.
+version = "=2.0.0-rc.10"
+optional = true
+default-features = false
+features = ["ndarray", "download-binaries", "std"]
+
+[dependencies.ndarray]
+version = "0.16"
+optional = true
+

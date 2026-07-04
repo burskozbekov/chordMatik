@@ -1,0 +1,258 @@
+/* ============================================================
+   chordMatik — global stylesheet
+   Order matters: Tailwind first, then HeroUI styles, then ours.
+   ============================================================ */
+@import "tailwindcss";
+@import "@heroui/styles";
+
+/* Class-based dark mode (we toggle `.dark` on <html>). */
+@custom-variant dark (&:is(.dark *));
+
+/* ------------------------------------------------------------
+   Brand scale + design tokens exposed as Tailwind utilities
+   (e.g. bg-brand-sky, text-brand-mint, from-brand-sky).
+   ------------------------------------------------------------ */
+@theme {
+  /* Light-green palette. Names kept (sky/mint/teal) so components don't change;
+     values are fresh greens — emerald primary, light mint secondary. */
+  --color-brand-sky: #16cf86; /* primary — vivid emerald */
+  --color-brand-sky-strong: #08a86b; /* deep emerald */
+  --color-brand-sky-soft: #a7f3d0; /* light green */
+  --color-brand-mint: #6ee7b7; /* secondary — light mint */
+  --color-brand-mint-soft: #bbf7d0; /* very light green */
+  --color-brand-teal: #5eead4; /* bridge — light teal */
+
+  --font-sans:
+    "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    system-ui, sans-serif;
+}
+
+/* ------------------------------------------------------------
+   Override HeroUI semantic tokens with the chordMatik palette.
+   HeroUI maps these raw vars to utilities via `@theme inline`,
+   so overriding them re-skins every component automatically.
+   Light values under :root, dark values under .dark.
+   ------------------------------------------------------------ */
+@layer base {
+  :root {
+    /* Light-green theme (the default). Vivid green accent on pale-mint paper. */
+    --accent: #0fb578; /* vivid emerald */
+    --accent-foreground: #f0fdf4;
+
+    --success: #15803d; /* green-700 */
+    --success-foreground: #f0fdf4;
+
+    /* App base + text — pale mint paper + deep forest ink. */
+    --background: #e3f5e8;
+    --foreground: #123528; /* deep forest green */
+    --muted: #5e806e; /* sage gray-green */
+
+    /* Surfaces / cards — very light green-white */
+    --surface: #f5fdf7;
+    --surface-foreground: #123528;
+
+    /* Hairlines — light green */
+    --border: #c8e8d2;
+    --separator: #c8e8d2;
+
+    /* Slightly rounder, premium radius scale */
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    --accent: #34d399; /* emerald pops on dark */
+    --accent-foreground: #04231b;
+
+    --success: #34d399;
+    --success-foreground: #04231b;
+
+    --background: #0c1f16; /* deep forest */
+    --foreground: #d6f5e0; /* light mint */
+    --muted: #7fa890; /* sage */
+
+    --surface: #11271c; /* dark green surface */
+    --surface-foreground: #d6f5e0;
+
+    --border: #1e3d2c; /* green hairline */
+    --separator: #1e3d2c;
+  }
+}
+
+/* ------------------------------------------------------------
+   Base element styles
+   ------------------------------------------------------------ */
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    /* Soft pale-green wash — light mode (default). */
+    background:
+      radial-gradient(
+        1200px 620px at 12% -8%,
+        color-mix(in oklab, var(--color-brand-sky-soft) 42%, transparent),
+        transparent 60%
+      ),
+      radial-gradient(
+        1000px 560px at 100% 0%,
+        color-mix(in oklab, var(--color-brand-mint-soft) 40%, transparent),
+        transparent 55%
+      ),
+      linear-gradient(160deg, #e8f8ed 0%, #ddf3e4 100%);
+    background-attachment: fixed;
+  }
+
+  .dark body {
+    background:
+      radial-gradient(
+        1200px 620px at 12% -8%,
+        color-mix(in oklab, var(--color-brand-sky) 16%, transparent),
+        transparent 60%
+      ),
+      radial-gradient(
+        1000px 560px at 100% 0%,
+        color-mix(in oklab, var(--color-brand-mint) 14%, transparent),
+        transparent 55%
+      ),
+      linear-gradient(160deg, #0c1f16 0%, #102a1c 100%);
+  }
+
+  /* App owns scrolling inside panels; hide the document scrollbar. */
+  body {
+    overflow: hidden;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--color-brand-sky) 30%, transparent);
+  }
+}
+
+/* Thin scrollbar for the song-tab strip. Styling ::-webkit-scrollbar opts OUT of
+   the macOS OVERLAY scrollbar (which floats on top of and overlaps the tabs) — the
+   bar now reserves its own thin row BELOW the tabs, so they never collide. */
+.tab-scroll::-webkit-scrollbar {
+  height: 7px;
+}
+.tab-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.tab-scroll::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklab, var(--muted) 50%, transparent);
+  border-radius: 9999px;
+}
+.tab-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted);
+}
+
+/* ------------------------------------------------------------
+   Reusable presentation utilities
+   ------------------------------------------------------------ */
+@layer components {
+  /* Frosted glass panel (top bar, floating cards). */
+  .glass {
+    background: color-mix(in oklab, var(--surface) 72%, transparent);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  }
+
+  /* The signature active-chord gradient (vivid emerald). */
+  .chord-gradient {
+    background-image: linear-gradient(135deg, #08a86b 0%, #14c97e 48%, #34d399 100%);
+  }
+
+  /* The YouTube IFrame API replaces our div with an iframe of the same id;
+     force it to fill its aspect-ratio container. */
+  #cmk-youtube-player {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+  }
+
+  /* Hero call-to-action: vivid emerald fill, dark-green legible label. */
+  .cta-gradient {
+    background-image: linear-gradient(135deg, #08a86b 0%, #14c97e 48%, #34d399 100%);
+    color: #053524;
+    box-shadow:
+      0 1px 0 0 color-mix(in oklab, #ffffff 50%, transparent) inset,
+      0 10px 24px -8px color-mix(in oklab, #08a86b 60%, transparent),
+      0 8px 20px -10px color-mix(in oklab, #34d399 70%, transparent);
+  }
+}
+
+/* Respect reduced-motion users globally. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* AlphaTab playback cursor. AlphaTab's bundled stylesheet (which colors these)
+   isn't loaded under the tauri:// asset protocol, so the cursor elements render
+   with no background and stay invisible. Force a visible emerald highlight: the
+   bar cursor tints the current bar, the beat cursor marks the active beat. */
+/* Soft elevation for floating glass panels/overlays (was referenced in ~13
+   places but never defined — so the shadow silently did nothing). */
+.shadow-overlay {
+  box-shadow:
+    0 10px 30px -12px color-mix(in oklab, #052e1d 38%, transparent),
+    0 2px 8px -5px color-mix(in oklab, #052e1d 22%, transparent);
+}
+.dark .shadow-overlay {
+  box-shadow:
+    0 12px 34px -12px rgba(0, 0, 0, 0.55),
+    0 2px 8px -5px rgba(0, 0, 0, 0.4);
+}
+
+/* Organic animated background — soft gradient blobs drifting slowly behind the
+   (glass) content. Reduced-motion users get a still frame via the global block. */
+.cmk-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(64px);
+  will-change: transform;
+}
+@keyframes cmk-blob-a {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  33% { transform: translate3d(7vw, 5vh, 0) scale(1.15); }
+  66% { transform: translate3d(-5vw, -4vh, 0) scale(0.9); }
+}
+@keyframes cmk-blob-b {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1.08); }
+  50% { transform: translate3d(-8vw, 6vh, 0) scale(0.88); }
+}
+@keyframes cmk-blob-c {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(0.92); }
+  40% { transform: translate3d(6vw, -6vh, 0) scale(1.2); }
+  75% { transform: translate3d(4vw, 5vh, 0) scale(1); }
+}
+
+.at-cursor-bar {
+  background: color-mix(in oklab, var(--accent) 13%, transparent) !important;
+  transition: transform 0.15s linear, left 0.15s linear, top 0.15s linear;
+}
+.at-cursor-beat {
+  background: color-mix(in oklab, var(--accent) 80%, transparent) !important;
+  transition: transform 0.1s linear, left 0.1s linear, top 0.1s linear;
+}
+/* Notes that fall under the cursor get highlighted in the accent too. */
+.at-highlight * {
+  fill: var(--accent) !important;
+  stroke: var(--accent) !important;
+}

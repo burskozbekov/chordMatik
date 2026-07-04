@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(rustc --version)",
+      "Bash(cargo --version)",
+      "Bash(cargo tauri *)",
+      "Bash(rustup target *)",
+      "Bash(xcode-select -p)",
+      "Bash(npm view *)",
+      "WebFetch(domain:www.heroui.com)",
+      "WebSearch",
+      "WebFetch(domain:heroui.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:v3.heroui.com)"
+    ]
+  }
+}
