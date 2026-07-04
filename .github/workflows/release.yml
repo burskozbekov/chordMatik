@@ -1,15 +1,11 @@
-name: Release
+name: Release (unsigned CI fallback)
 
-# Cut a release by pushing a version tag, e.g.:
-#   npm version patch        # bumps package.json + tauri.conf.json? (see UPDATER.md)
-#   git tag v0.1.1 && git push --tags
-# tauri-action builds the signed macOS bundle, creates the GitHub Release, and
-# uploads the updater artifacts (.app.tar.gz + .sig) plus latest.json — which is
-# exactly what the in-app updater fetches from /releases/latest/download/latest.json.
+# NOTE: signed + NOTARIZED releases are cut LOCALLY (the Developer ID cert +
+# notary credentials only live on the maintainer's Mac — GitHub CI can't notarize).
+# See UPDATER.md → "Cutting a notarized release". This workflow is manual-only
+# (workflow_dispatch) and builds an UNSIGNED bundle — a fallback for CI testing,
+# NOT the shipping path. Do NOT let it clobber a notarized release's artifacts.
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
 
 jobs:
