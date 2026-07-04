@@ -584,6 +584,36 @@ fn sweep_temp_audio(dir: &Path) {
     }
 }
 
+/// Compose a search-friendly "Artist - Title" from YouTube metadata when the
+/// video title lacks an artist. `artist` is yt-dlp's %(artist)s ("NA" when
+/// absent); `uploader` is the channel name (cleaned of OFFICIAL/VEVO/Topic
+/// cruft). A title that already carries an artist (has " - " or contains the
+/// artist's name) is returned untouched.
+fn compose_video_title(raw_title: &str, artist: &str, uploader: &str) -> String {
+    let title = raw_title.trim();
+    if title.is_empty() {
+        return String::new();
+    }
+    if title.contains(" - ") || title.contains(" – ") {
+        return title.to_string(); // already "Artist - Title"-shaped
+    }
+    // Candidate artist: first credited artist, else the cleaned channel name.
+    let first_artist = artist.split(',').next().unwrap_or("").trim();
+    let cand = if !first_artist.is_empty() && !first_artist.eq_ignore_ascii_case("na") {
+        first_artist.to_string()
+    } else {
+        let mut u = uploader.to_string();
+        for noise in ["- Topic", "OFFICIAL", "Official", "official", "VEVO", "Vevo", "vevo"] {
+            u = u.replace(noise, " ");
+        }
+        u.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+    if cand.is_empty() || title.to_lowercase().contains(&cand.to_lowercase()) {
+        return title.to_string();
+    }
+    format!("{cand} - {title}")
+}
+
 /// Delete ALL downloaded/captured temp audio + the tab caches (Songsterr/UG) —
 /// the "Clear all" action, and the ONLY thing that deletes song data. Closing a
 /// tab never deletes anything, so a song loaded once always reopens instantly.
@@ -806,9 +836,14 @@ pub async fn download_youtube_audio(
             }
         }
 
-        // 3) Best-effort title. Cached in a sidecar so REOPENING a previously
-        // downloaded link never waits on a yt-dlp metadata call (fully offline).
-        let title_cache = dir.join(format!("ytdl-{video_id}.title"));
+        // 3) Best-effort title + ARTIST in one metadata call. A bare title
+        // ("Solitude") makes every by-title lookup ambiguous — the wrong famous
+        // band wins the tab search, and audio cross-validation can't always
+        // disambiguate two similar songs. YouTube's own metadata knows the artist
+        // (music uploads carry %(artist)s; official channels name themselves), so
+        // compose "Artist - Title" when the title lacks one. Cached in a v2
+        // sidecar so reopening never waits on the network (old .title ignored).
+        let title_cache = dir.join(format!("ytdl-{video_id}.title2"));
         let title = match std::fs::read_to_string(&title_cache) {
             Ok(t) if !t.trim().is_empty() => t.trim().to_string(),
             _ => {
@@ -823,12 +858,20 @@ pub async fn download_youtube_audio(
                     "--extractor-args",
                     "youtube:player_client=tv,default",
                     "--print",
-                    "%(title)s",
+                    "%(title)s\t%(artist)s\t%(uploader)s",
                 ])
                 .arg(&url);
                 let fetched = run_with_timeout(t, Duration::from_secs(40))
                     .ok()
                     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .map(|line| {
+                        let mut parts = line.split('\t');
+                        let raw = parts.next().unwrap_or("").trim().to_string();
+                        let artist = parts.next().unwrap_or("").trim().to_string();
+                        let uploader = parts.next().unwrap_or("").trim().to_string();
+                        compose_video_title(&raw, &artist, &uploader)
+                    })
                     .filter(|s| !s.is_empty());
                 if let Some(ref s) = fetched {
                     let _ = std::fs::write(&title_cache, s);
@@ -2105,6 +2148,37 @@ mod tests {
         println!("  isolated bass: total={bt} low(28-55)={bl} high(>55)={bh}");
         println!("  raw mix:       total={mt} low(28-55)={ml_} high(>55)={mh}");
         assert!(bl > 3, "isolated bass should yield a bass line");
+    }
+
+    #[test]
+    fn composes_artist_from_metadata() {
+        // The Candlemass case: bare title, artist in metadata.
+        assert_eq!(
+            compose_video_title("Solitude", "Candlemass, Leif Edling", "CANDLEMASS OFFICIAL"),
+            "Candlemass - Solitude"
+        );
+        // No %(artist)s → cleaned channel name.
+        assert_eq!(
+            compose_video_title("Solitude", "NA", "CANDLEMASS OFFICIAL"),
+            "CANDLEMASS - Solitude"
+        );
+        // Topic channels.
+        assert_eq!(
+            compose_video_title("Sliver", "NA", "Nirvana - Topic"),
+            "Nirvana - Sliver"
+        );
+        // Title already has an artist → untouched.
+        assert_eq!(
+            compose_video_title("Toto - Africa (Official HD Video)", "Toto", "TotoVEVO"),
+            "Toto - Africa (Official HD Video)"
+        );
+        // Title already contains the artist name (no separator) → untouched.
+        assert_eq!(
+            compose_video_title("Candlemass Solitude full", "Candlemass", "x"),
+            "Candlemass Solitude full"
+        );
+        // Nothing usable → untouched.
+        assert_eq!(compose_video_title("Some Song", "NA", ""), "Some Song");
     }
 
     // Offline: content validators over every REAL cached Songsterr track. The
