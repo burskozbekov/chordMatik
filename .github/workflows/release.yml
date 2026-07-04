@@ -66,4 +66,4 @@ jobs:
           releaseBody: "Automated release. The app auto-updates to this version on next launch."
           releaseDraft: false
           prerelease: false
-          args: --target aarch64-apple-darwin
+          args: --target aarch64-apple-darwin --features btc
