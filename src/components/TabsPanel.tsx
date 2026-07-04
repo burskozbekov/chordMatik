@@ -1020,7 +1020,7 @@ export function TabsPanel({ title }: { title: string }) {
             </div>
           )}
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5">
           {customTab ? (
             customTracks.length >= 2 && (
               <select
@@ -1040,11 +1040,11 @@ export function TabsPanel({ title }: { title: string }) {
             <>
               {/* Tab ↔ standard-notation view, same segmented style as the rest. */}
               {(which === "guitar" || which === "bass") && (
-                <div className="flex items-center gap-0.5 rounded-xl border border-border/70 bg-surface/50 p-0.5">
+                <div className="flex h-8 shrink-0 items-center gap-0.5 rounded-full border border-border/70 bg-surface/50 p-0.5">
                   <button
                     type="button"
                     onClick={() => setNotation(false)}
-                    className={`rounded-lg px-3 py-1 text-xs font-semibold transition-colors ${
+                    className={`h-full whitespace-nowrap rounded-full px-3 text-xs font-semibold leading-none transition-colors ${
                       !notation ? "chord-gradient text-[#06351f] shadow-sm" : "text-muted hover:text-foreground"
                     }`}
                   >
@@ -1054,7 +1054,7 @@ export function TabsPanel({ title }: { title: string }) {
                     type="button"
                     onClick={() => setNotation(true)}
                     title="Standard notation alongside the tab"
-                    className={`rounded-lg px-3 py-1 text-xs font-semibold transition-colors ${
+                    className={`h-full whitespace-nowrap rounded-full px-3 text-xs font-semibold leading-none transition-colors ${
                       notation ? "chord-gradient text-[#06351f] shadow-sm" : "text-muted hover:text-foreground"
                     }`}
                   >
@@ -1063,13 +1063,13 @@ export function TabsPanel({ title }: { title: string }) {
                 </div>
               )}
               {present.length >= 2 && (
-                <div className="flex items-center gap-0.5 rounded-xl border border-border/70 bg-surface/50 p-0.5">
+                <div className="flex h-8 shrink-0 items-center gap-0.5 rounded-full border border-border/70 bg-surface/50 p-0.5">
                   {present.map((t) => (
                     <button
                       key={t}
                       type="button"
                       onClick={() => setWhich(t)}
-                      className={`rounded-lg px-3 py-1 text-xs font-semibold capitalize transition-colors ${
+                      className={`h-full whitespace-nowrap rounded-full px-3 text-xs font-semibold capitalize leading-none transition-colors ${
                         which === t ? "chord-gradient text-[#06351f] shadow-sm" : "text-muted hover:text-foreground"
                       }`}
                     >
@@ -1080,12 +1080,12 @@ export function TabsPanel({ title }: { title: string }) {
               )}
             </>
           )}
-          <div className="flex items-center rounded-xl border border-border/70 bg-surface/50 p-0.5">
+          <div className="flex h-8 shrink-0 items-center rounded-full border border-border/70 bg-surface/50 p-0.5">
             <button
               type="button"
               onClick={loadCustomTab}
               title="Open your own Guitar Pro (.gp/.gp5) or MusicXML file"
-              className="rounded-lg px-3 py-1 text-xs font-semibold text-muted transition-colors hover:text-foreground"
+              className="h-full whitespace-nowrap rounded-full px-3 text-xs font-semibold leading-none text-muted transition-colors hover:text-foreground"
             >
               📁 File
             </button>
