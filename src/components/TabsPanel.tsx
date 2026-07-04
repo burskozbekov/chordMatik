@@ -110,9 +110,36 @@ export function TabsPanel({ title }: { title: string }) {
     setCandScores({});
     validatedRef.current = null;
     fetchTabs(title)
-      .then((r) => {
+      .then(async (r) => {
         if (cancelled) return;
         if (r && (r.guitar || r.bass)) {
+          // A previously VALIDATED/CHOSEN version for this song beats the search's
+          // default pick. The search can't know the artist when the title lacks
+          // one ("Solitude" → the wrong famous band wins on popularity) — but a
+          // past audio cross-validation or manual pick already found the real one.
+          try {
+            const saved = JSON.parse(localStorage.getItem(`tabchoice:${title}`) || "null");
+            if (
+              saved &&
+              typeof saved.id === "number" &&
+              saved.id !== r.songId &&
+              r.candidates?.some((c) => c.songId === saved.id)
+            ) {
+              const c = r.candidates.find((x) => x.songId === saved.id)!;
+              const alt = await fetchTabTrack(c.songId, c.title, c.artist);
+              if (cancelled) return;
+              if (alt) {
+                if (saved.manual) userPickRef.current = title;
+                setResult({ ...alt, candidates: r.candidates });
+                setWhich(INSTRUMENTS.find((k) => alt[k]) ?? "guitar");
+                setState("done");
+                return;
+              }
+            }
+          } catch {
+            /* fall through to the default pick */
+          }
+          if (cancelled) return;
           setResult(r);
           setWhich(INSTRUMENTS.find((k) => r[k]) ?? "guitar");
           setState("done");
@@ -147,17 +174,27 @@ export function TabsPanel({ title }: { title: string }) {
     }
   }, [result, analysis]);
 
-  // Auto-reselect: when the picked tab clearly MISMATCHES the recording (✗ zone),
+  // Auto-reselect: whenever the picked tab isn't CLEARLY right (below the ✓ zone),
   // score the other Songsterr candidates against the audio and switch to the best.
-  // Runs at most once per song, awaits candidates sequentially (network-bound, no
-  // UI freeze), and never overrides a manual "Other version" choice.
+  // Catches artist-less titles ("Solitude" → the wrong famous band wins the text
+  // ranking; the audio agreement finds the real one). Runs at most once per song,
+  // awaits candidates sequentially (network-bound, no UI freeze), and never
+  // overrides a manual "Other version" choice. The winner is PERSISTED per title
+  // so reopening the song doesn't regress to the search's default pick.
   const autoPickRef = useRef<string | null>(null);
   const userPickRef = useRef<string | null>(null);
+  const storeChoice = (songId: number, manual: boolean) => {
+    try {
+      localStorage.setItem(`tabchoice:${title}`, JSON.stringify({ id: songId, manual }));
+    } catch {
+      /* ignore */
+    }
+  };
   useEffect(() => {
     const segs = analysis?.segments;
     const cands = result?.candidates ?? [];
     if (!result || !match || !segs || segs.length < 4 || cands.length < 2) return;
-    if (match.sChord >= 0.45) return; // current pick is fine (≈/✓ zone)
+    if (match.sChord >= 0.62) return; // ✓ zone — clearly the right song already
     if (userPickRef.current === title || autoPickRef.current === title) return;
     autoPickRef.current = title;
     let cancelled = false;
@@ -189,6 +226,7 @@ export function TabsPanel({ title }: { title: string }) {
       if (cancelled || !best.alt) return;
       validatedRef.current = best.alt.songId;
       setMatch({ score: best.score, sChord: best.sChord, shift: best.shift });
+      storeChoice(best.alt.songId, false); // sticky across reopens
       // Keep the candidate list so "Other version" still works after the swap.
       setResult({ ...best.alt, candidates: result.candidates });
     })();
@@ -758,6 +796,7 @@ export function TabsPanel({ title }: { title: string }) {
     const alt = await fetchTabTrack(c.songId, c.title, c.artist);
     if (!alt) return;
     userPickRef.current = title;
+    storeChoice(alt.songId, true); // sticky across reopens
     validatedRef.current = alt.songId;
     const segs = analysis?.segments;
     const t = alt.guitar ?? alt.bass;
@@ -775,6 +814,11 @@ export function TabsPanel({ title }: { title: string }) {
     setCandScores({});
     userPickRef.current = null;
     autoPickRef.current = null;
+    try {
+      localStorage.removeItem(`tabchoice:${title}`); // a refresh restarts the pick from scratch
+    } catch {
+      /* ignore */
+    }
     const r = await fetchTabs(title, true);
     if (r && (r.guitar || r.bass)) {
       validatedRef.current = null;
@@ -794,6 +838,7 @@ export function TabsPanel({ title }: { title: string }) {
     const alt = await fetchTabTrack(next.songId, next.title, next.artist);
     if (!alt) return;
     userPickRef.current = title; // a manual choice locks out the auto-reselect
+    storeChoice(alt.songId, true); // sticky across reopens
     validatedRef.current = alt.songId;
     const segs = analysis?.segments;
     const t = alt.guitar ?? alt.bass;
