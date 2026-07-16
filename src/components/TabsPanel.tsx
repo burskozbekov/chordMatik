@@ -563,16 +563,19 @@ export function TabsPanel({ title }: { title: string }) {
       const eng = engineRef.current;
       if (e.code === "KeyM") {
         e.preventDefault();
+        e.stopPropagation();
         const v = Math.max(0, Math.round(eng.getTime() * 1000) / 1000);
         setStartSec(v);
         if (!eng.isPlaying) eng.seek(v);
       } else if (e.code === "KeyR") {
         e.preventDefault();
+        e.stopPropagation();
         eng.seek(startRef.current);
       } else if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
         // Nudge the bar-1 start with arrow keys for precise alignment:
         // Shift = 1 ms (millimetric), plain = 10 ms, Alt/Option = 100 ms.
         e.preventDefault();
+        e.stopPropagation();
         const step = e.shiftKey ? 0.001 : e.altKey ? 0.1 : 0.01;
         const dir = e.code === "ArrowRight" ? 1 : -1;
         const v = Math.max(0, Math.round((startRef.current + dir * step) * 1000) / 1000);
@@ -580,8 +583,13 @@ export function TabsPanel({ title }: { title: string }) {
         if (!eng.isPlaying) eng.seek(v);
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // CAPTURE phase + stopPropagation: the app-level transport shortcuts
+    // (useKeyboardShortcuts, bubble phase) also bind ←/→ to seek ±5 s — without
+    // this, one arrow press BOTH seeked the song and nudged the start. With a
+    // tab active the nudge wins; with no tab our handler returns early and the
+    // transport seek still works.
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
   // Consume a "set start from a chord" pick made in the chord timeline. MUST be

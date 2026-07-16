@@ -201,6 +201,19 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
 
   const [ready, setReady] = useState(false);
   const [recording, setRecording] = useState(false);
+  // Recording-mix levels (0–2, 1 = unity). Applied live via GainNodes, so you can
+  // rebalance instrument vs song WHILE recording. Only affects the recording —
+  // what you hear from the speakers is untouched.
+  const [micVol, setMicVol] = useState(1);
+  const [songVol, setSongVol] = useState(0.9);
+  const micGainRef = useRef<GainNode | null>(null);
+  const songGainRef = useRef<GainNode | null>(null);
+  useEffect(() => {
+    if (micGainRef.current) micGainRef.current.gain.value = micVol;
+  }, [micVol]);
+  useEffect(() => {
+    if (songGainRef.current) songGainRef.current.gain.value = songVol;
+  }, [songVol]);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -220,7 +233,16 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: { ideal: REC_W }, height: { ideal: REC_H } },
-          audio: true,
+          // Music-grade mic: the default VOICE processing (echo cancellation /
+          // noise suppression / AGC) mangles an instrument — it "ducks" sustained
+          // guitar notes as if they were echo and pumps the level. Raw is right
+          // for recording playing; the song comes from our own element, not the
+          // room, so there's no echo to cancel (headphones recommended).
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
         });
         if (cancelled) {
           stream.getTracks().forEach((t) => t.stop());
@@ -317,8 +339,16 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
       await ctx.resume(); // a context made outside a gesture starts suspended
       const dest = ctx.createMediaStreamDestination();
       const micSrc = ctx.createMediaStreamSource(camStream);
-      songSrc.connect(dest); // mix song + mic into one audio track for the recording
-      micSrc.connect(dest);
+      // Mix song + mic into one audio track, each through its own level control
+      // (adjustable live from the 🎤/♪ sliders while recording).
+      const micGain = ctx.createGain();
+      const songGain = ctx.createGain();
+      micGain.gain.value = micVol;
+      songGain.gain.value = songVol;
+      micGainRef.current = micGain;
+      songGainRef.current = songGain;
+      songSrc.connect(songGain).connect(dest);
+      micSrc.connect(micGain).connect(dest);
 
       const canvasStream = canvas.captureStream(30);
       const mixed = new MediaStream([
@@ -336,11 +366,15 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
       // the song stays audible after recording stops.
       recTeardownRef.current = () => {
         try {
-          songSrc.disconnect(dest);
+          songSrc.disconnect(songGain);
+          songGain.disconnect();
           micSrc.disconnect();
+          micGain.disconnect();
         } catch {
           /* already torn down */
         }
+        micGainRef.current = null;
+        songGainRef.current = null;
         recTeardownRef.current = null;
       };
       rec.onstop = async () => {
@@ -370,7 +404,7 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
     } catch (e) {
       setError(`Couldn't start recording: ${String(e)}`);
     }
-  }, [engine]);
+  }, [engine, micVol, songVol]);
 
   const stopRecording = useCallback(() => {
     const r = recRef.current;
@@ -463,6 +497,36 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
                   : "Paused"
                 : "Chords burned into the video"}
           </span>
+          <label
+            className="flex shrink-0 items-center gap-1 text-[11px] text-muted"
+            title="Your instrument's level in the recording (mic)"
+          >
+            🎤
+            <input
+              type="range"
+              min={0}
+              max={2}
+              step={0.05}
+              value={micVol}
+              onChange={(e) => setMicVol(Number(e.target.value))}
+              className="w-16 accent-[var(--accent)]"
+            />
+          </label>
+          <label
+            className="flex shrink-0 items-center gap-1 text-[11px] text-muted"
+            title="The song's level in the recording"
+          >
+            ♪
+            <input
+              type="range"
+              min={0}
+              max={2}
+              step={0.05}
+              value={songVol}
+              onChange={(e) => setSongVol(Number(e.target.value))}
+              className="w-16 accent-[var(--accent)]"
+            />
+          </label>
           {recording ? (
             <button
               type="button"

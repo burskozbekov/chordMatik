@@ -26,10 +26,13 @@ pub struct AppInfo {
 }
 
 #[tauri::command]
-pub fn app_info() -> AppInfo {
+pub fn app_info(app: tauri::AppHandle) -> AppInfo {
     AppInfo {
         name: "chordMatik".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        // From tauri.conf.json — the SAME source the updater compares against, so
+        // the footer version can never drift from the shipped version again
+        // (env!(CARGO_PKG_VERSION) read Cargo.toml, which release bumps missed).
+        version: app.package_info().version.to_string(),
         os: crate::platform::os_label().to_string(),
     }
 }
@@ -1470,10 +1473,15 @@ pub async fn fetch_tab_track(
 
 /// Find the highest-RATED community bass tab (Ultimate Guitar) for a song title.
 /// Returns plain-text ASCII tab + star rating + alternate versions, or null.
+/// `fresh` bypasses the on-disk pick cache (↻ refresh).
 #[tauri::command]
-pub async fn fetch_bass_tab(app: tauri::AppHandle, title: String) -> Option<ug::BassTab> {
+pub async fn fetch_bass_tab(
+    app: tauri::AppHandle,
+    title: String,
+    fresh: Option<bool>,
+) -> Option<ug::BassTab> {
     let cache_dir = app.path().app_cache_dir().ok()?.join("tabs");
-    ug::best_bass_tab(&cache_dir, &title).await
+    ug::best_bass_tab(&cache_dir, &title, fresh.unwrap_or(false)).await
 }
 
 /// Fetch a specific bass-tab version's ASCII content by id (for the version picker).
@@ -2299,7 +2307,7 @@ mod tests {
             "Red Hot Chili Peppers - Californication (Official Music Video)",
             "Nirvana - Sliver",
         ] {
-            match tauri::async_runtime::block_on(ug::best_bass_tab(&dir, title)) {
+            match tauri::async_runtime::block_on(ug::best_bass_tab(&dir, title, true)) {
                 Some(b) => {
                     println!(
                         "UG_PROBE \"{title}\" -> {} — {} | ★{:.2} ({} votes) id={} | {} versions",

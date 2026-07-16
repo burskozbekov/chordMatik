@@ -40,7 +40,7 @@ export function RatedBassTab({ title }: { title: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastLineRef = useRef(-1);
 
-  useEffect(() => {
+  const load = (fresh: boolean) => {
     genRef.current += 1;
     const gen = genRef.current;
     setState("loading");
@@ -49,7 +49,7 @@ export function RatedBassTab({ title }: { title: string }) {
     setActiveId(null);
     setSwitching(false);
     setPickError(false);
-    fetchBassTab(title).then((d) => {
+    fetchBassTab(title, fresh).then((d) => {
       if (gen !== genRef.current) return; // song changed mid-fetch
       if (d) {
         setData(d);
@@ -60,6 +60,10 @@ export function RatedBassTab({ title }: { title: string }) {
         setState("none");
       }
     });
+  };
+  useEffect(() => {
+    load(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [title]);
 
   const active = useMemo(
@@ -187,6 +191,14 @@ export function RatedBassTab({ title }: { title: string }) {
           className="text-muted underline transition-colors hover:text-foreground"
         >
           Ultimate Guitar ↗
+        </button>
+        <button
+          type="button"
+          onClick={() => load(true)}
+          title="Re-search Ultimate Guitar (ignore the cached pick)"
+          className="text-muted transition-colors hover:text-foreground"
+        >
+          ↻
         </button>
       </div>
       <div

@@ -49,19 +49,55 @@ check just errors and is ignored.
      missing secret to an empty string, which matches. (If you later regenerate
      the key *with* a password, add that secret then.)
 
-## Cutting a release
+## Cutting a notarized release
+
+Releases are built, signed, **and notarized locally** — GitHub CI cannot notarize
+(the Developer ID certificate + notary credentials only exist on this Mac). The
+CI `Release` workflow is a **manual-only unsigned fallback** (workflow_dispatch);
+a tag push alone no longer publishes anything.
 
 1. Bump the version in **both** `package.json` and `src-tauri/tauri.conf.json`
-   (e.g. `0.1.0` → `0.1.1`). The updater only updates to a **higher** semver.
-2. Tag + push:
+   (e.g. `0.1.1` → `0.1.2`). (`Cargo.toml` is cosmetic — the in-app footer reads
+   the tauri.conf version — but bump it too for hygiene.) The updater only
+   updates to a **higher** semver.
+2. Build the signed release bundle:
    ```bash
-   git commit -am "v0.1.1"
-   git tag v0.1.1
-   git push origin main --tags
+   export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/chordmatik_updater.key)"
+   export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+   export APPLE_SIGNING_IDENTITY="Developer ID Application: Sevki Bugra Ozbek (PCH6L56487)"
+   export APPLE_TEAM_ID="PCH6L56487"
+   npm run tauri build -- --features btc --bundles app,dmg
    ```
-3. The `Release` workflow (`.github/workflows/release.yml`) builds the signed
-   bundle, creates the GitHub Release, and uploads the updater artifacts +
-   `latest.json`. Done — installed apps update themselves on next launch.
+3. Notarize + staple (profile `retinatag-notary` is stored in the keychain):
+   ```bash
+   cd src-tauri/target/release/bundle
+   xcrun notarytool submit dmg/*.dmg --keychain-profile retinatag-notary --wait
+   xcrun stapler staple dmg/*.dmg
+   xcrun stapler staple macos/chordMatik.app
+   ```
+4. Re-pack the **stapled** app for the updater and re-sign it:
+   ```bash
+   rm -f macos/chordMatik.app.tar.gz macos/chordMatik.app.tar.gz.sig
+   tar -C macos -czf macos/chordMatik.app.tar.gz chordMatik.app
+   (cd ../../../.. && npx tauri signer sign src-tauri/target/release/bundle/macos/chordMatik.app.tar.gz)
+   ```
+   If you rebuild the DMG by hand from the stapled app, **codesign the DMG**
+   (`codesign --force --sign "Developer ID Application: …" --timestamp <dmg>`)
+   before notarizing it, or Gatekeeper rejects the DMG container itself.
+5. Verify: `spctl -a -vvv -t exec macos/chordMatik.app` → `accepted ·
+   source=Notarized Developer ID`, and `stapler validate` both artifacts.
+6. Publish — hand-write `latest.json` and create the release:
+   ```bash
+   gh release create vX.Y.Z --target main \
+     dmg/chordMatik_X.Y.Z_aarch64.dmg \
+     macos/chordMatik.app.tar.gz#chordMatik_aarch64.app.tar.gz \
+     macos/chordMatik.app.tar.gz.sig#chordMatik_aarch64.app.tar.gz.sig \
+     latest.json
+   ```
+   `latest.json` shape: `{"version":"X.Y.Z","platforms":{"darwin-aarch64":
+   {"signature":"<contents of the .sig>","url":"https://github.com/burskozbekov/chordMatik/releases/download/vX.Y.Z/chordMatik_aarch64.app.tar.gz"}}}`
+   (upload the tar.gz under the exact name `chordMatik_aarch64.app.tar.gz`).
+   Done — installed apps silently update on next launch.
 
 ### Building/signing locally instead of CI
 ```bash

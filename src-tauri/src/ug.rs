@@ -70,15 +70,21 @@ fn utc_date_hour(secs: u64) -> String {
     format!("{year:04}-{m:02}-{d:02}:{hour:02}")
 }
 
-/// The per-request signature UG's mobile API expects.
-fn api_key() -> String {
-    let secs = SystemTime::now()
+/// The per-request signature for a given hour-offset from now. UG's notary clock
+/// runs AHEAD of real UTC (empirically ~+1h as of 2026-07) and rejects a key
+/// signed for the "wrong" hour with HTTP 498 — so callers retry across offsets.
+fn api_key_for(offset_hours: i64) -> String {
+    let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    let secs = (now + offset_hours * 3600).max(0) as u64;
     let payload = format!("{UG_CLIENT_ID}{}createLog()", utc_date_hour(secs));
     format!("{:x}", md5::compute(payload.as_bytes()))
 }
+
+/// Hour offsets to try, best-guess first (server runs ahead → +1 usually wins).
+const KEY_OFFSETS: [i64; 3] = [1, 0, -1];
 
 fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
@@ -89,11 +95,33 @@ fn client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Attach the auth headers (fresh signature) to a request.
-fn auth(rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+/// Attach the auth headers (signature for `offset_hours`) to a request.
+fn auth(rb: reqwest::RequestBuilder, offset_hours: i64) -> reqwest::RequestBuilder {
     rb.header("Accept", "application/json")
         .header("X-UG-CLIENT-ID", UG_CLIENT_ID)
-        .header("X-UG-API-KEY", api_key())
+        .header("X-UG-API-KEY", api_key_for(offset_hours))
+}
+
+/// GET a UG endpoint, retrying across hour-offsets when the notary clock rejects
+/// the signature (HTTP 498). Returns the first 2xx JSON body, else None.
+async fn ug_get(
+    cl: &reqwest::Client,
+    url: &str,
+    query: &[(&str, &str)],
+) -> Option<serde_json::Value> {
+    for off in KEY_OFFSETS {
+        let Ok(resp) = auth(cl.get(url).query(query), off).send().await else {
+            return None;
+        };
+        let status = resp.status();
+        if status.is_success() {
+            return resp.json::<serde_json::Value>().await.ok();
+        }
+        if status.as_u16() != 498 {
+            return None; // a real error (404/500/…), not clock-skew
+        }
+    }
+    None
 }
 
 /// Tokenize a string: lowercase alphanumerics, drop 1-char + noise words.
@@ -155,20 +183,21 @@ struct Hit {
 }
 
 /// Search UG for bass tabs matching `query`, ranked by (title relevance, then
-/// Bayesian rating). Best first. Empty on network/parse failure.
-async fn search_ranked(cl: &reqwest::Client, query: &str) -> Vec<Hit> {
-    let resp = match auth(
-        cl.get("https://api.ultimate-guitar.com/api/v1/tab/search")
-            .query(&[("title", query), ("type[]", BASS_TYPE), ("page", "1")]),
+/// Bayesian rating). Best first. Empty on network/parse failure. `song_tokens`
+/// (the song-NAME part of the query) must ALL match — an artist-only hit (the
+/// artist's other songs) never passes, no matter how well-rated.
+async fn search_ranked(
+    cl: &reqwest::Client,
+    query: &str,
+    song_tokens: &HashSet<String>,
+) -> Vec<Hit> {
+    let Some(json) = ug_get(
+        cl,
+        "https://api.ultimate-guitar.com/api/v1/tab/search",
+        &[("title", query), ("type[]", BASS_TYPE), ("page", "1")],
     )
-    .send()
     .await
-    .and_then(|r| r.error_for_status())
-    {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
-    };
-    let Ok(json) = resp.json::<serde_json::Value>().await else {
+    else {
         return Vec::new();
     };
     let tabs = json.get("tabs").and_then(|t| t.as_array()).cloned().unwrap_or_default();
@@ -200,10 +229,14 @@ async fn search_ranked(cl: &reqwest::Client, query: &str) -> Vec<Hit> {
             } else {
                 matched as f32 / qtokens.len() as f32
             };
-            // Require a real overlap: at least half the query tokens for multi-word
-            // queries (guards against a lone artist- or common-word match winning
-            // when the exact tab is absent), else at least one.
             if !qtokens.is_empty() && matched == 0 {
+                return None;
+            }
+            // The SONG-name tokens must ALL be present. The old half-overlap floor
+            // had an off-by-one at exactly 0.5 AND still let artist-only matches
+            // through for multi-word artists — when UG lacks the exact song, the
+            // artist's best-rated OTHER song won. Better no tab than a wrong one.
+            if !song_tokens.is_empty() && !song_tokens.iter().all(|t| hay.contains(t)) {
                 return None;
             }
             if qtokens.len() >= 2 && rel < 0.5 {
@@ -220,16 +253,12 @@ async fn search_ranked(cl: &reqwest::Client, query: &str) -> Vec<Hit> {
 /// Fetch a tab's `(cleaned ASCII content, canonical web url)` from `/tab/info`.
 async fn fetch_info(id: u64) -> Option<(String, String)> {
     let cl = client().ok()?;
-    let resp = auth(
-        cl.get("https://api.ultimate-guitar.com/api/v1/tab/info")
-            .query(&[("tab_id", id.to_string().as_str()), ("tab_access_type", "public")]),
+    let json = ug_get(
+        &cl,
+        "https://api.ultimate-guitar.com/api/v1/tab/info",
+        &[("tab_id", id.to_string().as_str()), ("tab_access_type", "public")],
     )
-    .send()
-    .await
-    .ok()?
-    .error_for_status()
-    .ok()?;
-    let json = resp.json::<serde_json::Value>().await.ok()?;
+    .await?;
     let content = clean_content(json.get("content").and_then(|v| v.as_str())?);
     if content.is_empty() {
         return None;
@@ -252,24 +281,36 @@ pub async fn tab_content(cache_dir: &Path, id: u64) -> Option<String> {
     Some(content)
 }
 
-/// Find the highest-rated bass tab for a song title. Cached on disk by title.
-pub async fn best_bass_tab(cache_dir: &Path, title: &str) -> Option<BassTab> {
-    // Sorted so the cache filename is deterministic (HashSet order is randomized).
-    let mut key_parts = tokset(title).into_iter().collect::<Vec<_>>();
-    key_parts.sort();
-    let key = key_parts.join("_");
-    let cache = cache_dir.join(format!("ugbass-{key}.json"));
-    if let Ok(s) = std::fs::read_to_string(&cache) {
-        if let Ok(bt) = serde_json::from_str::<BassTab>(&s) {
-            return Some(bt);
-        }
-    }
-    let cl = client().ok()?;
+/// Find the highest-rated bass tab for a song title. Cached on disk by title;
+/// `fresh` bypasses + rewrites the cache (↻ refresh / after ranking changes).
+pub async fn best_bass_tab(cache_dir: &Path, title: &str, fresh: bool) -> Option<BassTab> {
     let query = clean_query(title);
     if query.is_empty() {
         return None;
     }
-    let hits = search_ranked(&cl, &query).await;
+    // Song-name part: after the last " - " / " – " (titles are composed
+    // "Artist - Song"); the whole title when there's no separator.
+    let song_part = title
+        .rsplit_once(" – ")
+        .map(|(_, s)| s)
+        .or_else(|| title.rsplit_once(" - ").map(|(_, s)| s))
+        .unwrap_or(title);
+    let song_tokens = tokset(&clean_query(song_part));
+    // v2 cache: keyed by the SAME cleaned query the search uses (bracket-only
+    // title variants collide correctly), sorted for determinism, and VERSIONED so
+    // a ranking change invalidates stale picks. Bump v when this logic changes.
+    let mut key_parts: Vec<&str> = query.split(' ').collect();
+    key_parts.sort_unstable();
+    let cache = cache_dir.join(format!("ugbass-v2-{}.json", key_parts.join("_")));
+    if !fresh {
+        if let Ok(s) = std::fs::read_to_string(&cache) {
+            if let Ok(bt) = serde_json::from_str::<BassTab>(&s) {
+                return Some(bt);
+            }
+        }
+    }
+    let cl = client().ok()?;
+    let hits = search_ranked(&cl, &query, &song_tokens).await;
     if hits.is_empty() {
         return None;
     }

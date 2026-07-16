@@ -120,11 +120,12 @@ export interface RatedBassTab {
   versions: BassTabVersion[];
 }
 
-/** Find the highest-STARRED bass tab (Ultimate Guitar) for a (messy) song title. */
-export async function fetchBassTab(title: string): Promise<RatedBassTab | null> {
+/** Find the highest-STARRED bass tab (Ultimate Guitar) for a (messy) song title.
+ *  `fresh` bypasses the on-disk pick cache (↻ refresh). */
+export async function fetchBassTab(title: string, fresh = false): Promise<RatedBassTab | null> {
   if (!isTauri()) return null;
   try {
-    return await invoke<RatedBassTab | null>("fetch_bass_tab", { title });
+    return await invoke<RatedBassTab | null>("fetch_bass_tab", { title, fresh });
   } catch {
     return null;
   }
