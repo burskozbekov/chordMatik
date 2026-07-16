@@ -505,9 +505,20 @@ export async function refineSyncPoints(
   const merged: SyncAnchor[] = [];
   let lastMs = -1;
   for (const a of res.anchors) {
-    // Per-anchor gate: trust the refined ms only when locally confident.
-    const ms =
-      a.confidence >= 0.55 ? a.millisecondOffset : coarseByBar.get(a.barIndex) ?? a.millisecondOffset;
+    // Per-anchor gate: trust the refined ms only when locally confident; else fall
+    // back to the coarse ms for that bar. If the bar is ABSENT from the coarse set
+    // (a sustained-chord bar the coarse pass de-duplicated away) there IS no
+    // fallback — SKIP it entirely so AlphaTab interpolates smoothly between the
+    // trusted neighbours, instead of keeping the low-confidence refined value that
+    // wandered within the ±2-bar band and marched the cursor unevenly.
+    let ms: number;
+    if (a.confidence >= 0.55) {
+      ms = a.millisecondOffset;
+    } else {
+      const c = coarseByBar.get(a.barIndex);
+      if (c === undefined) continue; // no fallback for a de-duped bar → drop, interpolate
+      ms = c;
+    }
     if (ms < floorMs) continue; // closed-start artifact inside the skipped intro
     if (ms <= lastMs) continue;
     merged.push({ barIndex: a.barIndex, barPosition: 0, barOccurence: 0, millisecondOffset: ms });
