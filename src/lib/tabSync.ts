@@ -314,9 +314,17 @@ export function subseqDtw(
   // one segment. ~1e-6 × path length is noise next to real chroma distances.
   const STEP_PEN = 1e-6;
 
+  // Tiny start-position bias: on a REPEATING song, the same loop matches equally
+  // well at several audio positions (all cost ~0), and without a tiebreaker the
+  // DP can lock onto a LATER repeat — the tab then plays a whole section ahead of
+  // the recording, invisibly to the confidence gate. Bias the free-start toward
+  // the EARLIEST position so ties resolve to the song's actual beginning. The
+  // bias (max ~1e-4 across the whole track) is far below any real chroma distance,
+  // so it only breaks exact ties.
+  const START_BIAS = 1e-4;
   // D[j][i]: cost of aligning tab bars 0..j ending at audio segment i.
   const D: Float64Array[] = Array.from({ length: m }, () => new Float64Array(n).fill(INF));
-  for (let i = 0; i < n; i++) D[0][i] = dist(i, 0); // free start anywhere in the audio
+  for (let i = 0; i < n; i++) D[0][i] = dist(i, 0) + (i / Math.max(1, n)) * START_BIAS; // free start, earliest wins ties
   for (let j = 1; j < m; j++) {
     for (let i = 0; i < n; i++) {
       const up = D[j - 1][i] + STEP_PEN;
@@ -434,9 +442,19 @@ export function computeSyncPoints(segs: ChordSegment[], track: SongsterrTrack): 
   // "drifts + goes out of tempo toward the end". Pinning the end instead spreads
   // those bars across the real remaining time.
   const lastBar = B.length - 1;
-  // The end of the analyzed audio (≈ the song's end), so the collapsed outro bars
-  // spread across the REAL remaining time even when the outro is no-chord/faded.
-  const recEndMs = (segs.length ? segs[segs.length - 1].endSec : 0) * 1000;
+  // End of the last segment that actually carries a CHORD — NOT segs[last].endSec,
+  // which includes a trailing no-chord tail (silence / applause / a long fade the
+  // detector heard as no-chord). Pinning the final bar to the absolute end would
+  // stretch the last content bars across that dead air, drifting the outro. Fall
+  // back to the absolute end only if nothing has a chord.
+  let musicEndSec = 0;
+  for (let i = segs.length - 1; i >= 0; i--) {
+    if (segChroma(segs[i])) {
+      musicEndSec = segs[i].endSec;
+      break;
+    }
+  }
+  const recEndMs = (musicEndSec || (segs.length ? segs[segs.length - 1].endSec : 0)) * 1000;
   const tail = points[points.length - 1];
   if (tail && tail.barIndex < lastBar && recEndMs > tail.millisecondOffset + 1) {
     points.push({ barIndex: lastBar, barPosition: 0, barOccurence: 0, millisecondOffset: recEndMs });

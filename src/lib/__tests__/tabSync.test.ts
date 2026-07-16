@@ -88,6 +88,33 @@ describe("computeSyncPoints", () => {
     const res = computeSyncPoints(segs, track(Array.from({ length: 16 }, (_, i) => bar(maj(PROG[i % 4]))))); // 16 bars
     expect(res.confidence).toBeLessThan(0.45);
   });
+
+  it("prefers the EARLIEST match on a repeating song (loop-instance tiebreaker)", () => {
+    // The 4-bar loop C G D F occurs TWICE in the audio, then trailing no-chord.
+    // The tab is that single loop — it must align to the FIRST occurrence (t≈0.5s),
+    // not the second (t≈8.5s).
+    const segs: ChordSegment[] = [];
+    let t = 0.5;
+    for (let rep = 0; rep < 2; rep++)
+      for (const root of PROG) {
+        segs.push(seg(root, t, t + SPB));
+        t += SPB;
+      }
+    const res = computeSyncPoints(segs, track(PROG.map((r) => bar(maj(r)))));
+    expect(res.points[0].barIndex).toBe(0);
+    expect(res.points[0].millisecondOffset).toBeLessThan(2000); // first loop, not the 8.5s one
+  });
+
+  it("pins the LAST bar to the end of the last CHORD, not trailing silence", () => {
+    // 4 chord bars ending at 8s, then 20s of no-chord (fade/applause) to 28s.
+    const segs: ChordSegment[] = PROG.map((r, i) => seg(r, i * SPB, (i + 1) * SPB));
+    segs.push({ rootPc: -1, quality: "N", label: "N", startSec: 8, endSec: 28 } as unknown as ChordSegment);
+    // A tab with more bars than the audio has chords → the tail-pin path fires.
+    const res = computeSyncPoints(segs, track(Array.from({ length: 8 }, (_, i) => bar(maj(PROG[i % 4])))));
+    const tail = res.points[res.points.length - 1];
+    // Last anchor must be at/near the music end (8s), NOT the 28s silence end.
+    expect(tail.millisecondOffset).toBeLessThan(12000);
+  });
 });
 
 describe("beatSyncPoints (generated/AI bass follows tracked beats)", () => {

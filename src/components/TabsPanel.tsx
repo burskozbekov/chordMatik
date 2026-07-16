@@ -416,9 +416,11 @@ export function TabsPanel({ title }: { title: string }) {
   }, [syncResult, useGenBass, useAiBass]);
 
   // Upgrade an untouched auto-seeded start to the aligned tab entry. A start the
-  // user has moved (≠ the recorded seed) is never overridden.
+  // user has moved (≠ the recorded seed) is never overridden. NEVER while playing:
+  // chord analysis can finish late, and moving the start (esp. the manual grid)
+  // mid-song would visibly yank the cursor — defer until playback stops.
   useEffect(() => {
-    if (alignedStartSec == null || !syncKey) return;
+    if (alignedStartSec == null || !syncKey || engine.isPlaying) return;
     const seed = autoSeedRef.current;
     if (!seed || seed.key !== syncKey) return;
     // Epsilon below the finest (Shift = 1 ms) nudge, so ANY manual move counts.
@@ -426,7 +428,7 @@ export function TabsPanel({ title }: { title: string }) {
     if (Math.abs(alignedStartSec - startSec) < 0.0005) return; // already there
     autoSeedRef.current = { key: syncKey, value: alignedStartSec };
     setStartSec(alignedStartSec);
-  }, [alignedStartSec, syncKey, startSec]);
+  }, [alignedStartSec, syncKey, startSec, engine.isPlaying]);
 
   // Drifts mode: refine the chord warp with chroma-frame DTW (Rust, async).
   // Skipped for generated/AI bass — their warp is discarded anyway (see `warp`),
@@ -490,20 +492,35 @@ export function TabsPanel({ title }: { title: string }) {
     syncResult && syncResult.points.length >= 2 && syncResult.confidence >= WARP_MIN_CONFIDENCE
       ? syncResult
       : null;
-  // The generated/AI bass is built AT the felt tempo + start, so the chord-DTW warp
-  // (made for Songsterr tabs, unreliable on single-note bass bars) is skipped —
-  // instead we ride the recording's REAL tracked beats (follows tempo drift too),
-  // falling back to the manual constant-tempo map when no beats are available.
+  // Ride the recording's REAL tracked beats — the most tempo-robust grid for ANY
+  // tab (Songsterr too, not just generated/AI bass). Chroma-based sync (warp +
+  // refine) goes flat under a sustained chord, so a tempo change while one chord
+  // holds can't be localized and the cursor drifts between chord changes; a beat
+  // grid has an anchor on every beat and tracks the drift. Only trusted when it
+  // DENSELY covers the tab (≥60% of bars) — a short/wrong-octave beat track that
+  // covers too little falls back to the chord warp instead.
   const beatSync = useMemo(
     () =>
-      (useGenBass || useAiBass) && activeTrack && drift && songBeats.length > 4
+      activeTrack && drift && songBeats.length > 4
         ? beatSyncPoints(activeTrack, songBeats, startSec, meterBeats)
         : null,
-    [useGenBass, useAiBass, activeTrack, drift, songBeats, startSec, meterBeats],
+    [activeTrack, drift, songBeats, startSec, meterBeats],
   );
-  const warp = drift && !useGenBass && !useAiBass ? refined ?? warpBase : null;
+  // ≥85% coverage: a half-time beat track (half the beats) covers only ~half the
+  // bars → drops below this and falls back to the chord warp instead of drifting.
+  const tabBars = activeTrack?.measures?.length ?? 0;
+  const beatCovers = !!beatSync && beatSync.points.length >= Math.max(2, tabBars * 0.85);
+  // Chord-DTW warp still owns generated/AI bass exclusion + confidence gating.
+  const chordWarp = drift && !useGenBass && !useAiBass ? refined ?? warpBase : null;
+  // Priority: dense real-beat grid → chord-DTW warp (structural) → sparse beats →
+  // constant-tempo map.
   const autoSyncPoints =
-    (warp ?? (beatSync && beatSync.points.length >= 2 ? beatSync : null) ?? manual)?.points ?? null;
+    (
+      (beatCovers ? beatSync : null) ??
+      chordWarp ??
+      (beatSync && beatSync.points.length >= 2 ? beatSync : null) ??
+      manual
+    )?.points ?? null;
   // ⚓ user-pinned bars (bar → ms), persisted per syncKey — authoritative overrides
   // for stubborn spots where the automatic sync is off.
   const [pins, setPins] = useState<Record<number, number>>({});

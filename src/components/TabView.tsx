@@ -126,7 +126,12 @@ export function TabView({
           const d = engineRef.current.duration;
           return (Number.isFinite(d) && d > 0 ? d : 36000) * 1000;
         },
-        playbackRate: 1,
+        // Track the practice speed so AlphaTab's animated beat cursor extrapolates
+        // at the RIGHT rate between our position updates — a hard-coded 1 made the
+        // cursor lag then jerk at 1.5×/2× playback.
+        get playbackRate() {
+          return engineRef.current.playbackRate || 1;
+        },
         masterVolume: 1,
         seekTo: (ms: number) => {
           if (Date.now() >= suppressUntilRef.current)
@@ -148,7 +153,10 @@ export function TabView({
         // scrolls during playback).
         const jumped = lastT >= 0 && Math.abs(t - lastT) > 1.5;
         lastT = t;
-        if (!jumped && now - lastPush < 40) return;
+        // Push more often at faster practice speeds so the animated cursor has
+        // less to extrapolate between updates (less visible drift/stutter).
+        const throttle = engineRef.current.playbackRate > 1.05 ? 20 : 40;
+        if (!jumped && now - lastPush < throttle) return;
         lastPush = now;
         try {
           output.updatePosition(mapTime(t) * 1000);
