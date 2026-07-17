@@ -198,9 +198,16 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
   segRef.current = segments;
   const transRef = useRef(transpose);
   transRef.current = transpose;
+  // The recorded song is delayed by syncMs (below), so the burned-in chord ribbon
+  // is drawn syncMs "late" too — that way chords line up with the song in the file
+  // exactly as the mic does. Applied only WHILE recording, so the live self-view
+  // preview keeps matching the (undelayed) speakers.
+  const syncSecRef = useRef(0);
 
   const [ready, setReady] = useState(false);
   const [recording, setRecording] = useState(false);
+  const recordingRef = useRef(false); // for the long-lived draw loop
+  recordingRef.current = recording;
   // Recording-mix levels (0–2, 1 = unity). Applied live via GainNodes, so you can
   // rebalance instrument vs song WHILE recording. Only affects the recording —
   // what you hear from the speakers is untouched.
@@ -214,6 +221,30 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
   useEffect(() => {
     if (songGainRef.current) songGainRef.current.gain.value = songVol;
   }, [songVol]);
+  // A/V latency compensation for the RECORDING only. The mic captures your playing
+  // a little LATE (input latency), so in the video your playing lags the song.
+  // syncMs > 0 delays the SONG in the recording to line up with the late mic;
+  // < 0 delays the mic (rare). Persisted, since it's a per-machine constant. What
+  // you HEAR from the speakers is never delayed. Default is a typical mic latency.
+  const [syncMs, setSyncMs] = useState(() => {
+    const raw = localStorage.getItem("cmk.camSyncMs"); // null when never set
+    const v = Number(raw);
+    return raw !== null && Number.isFinite(v) ? v : 90; // an explicit 0 must persist
+  });
+  const songDelayRef = useRef<DelayNode | null>(null);
+  const micDelayRef = useRef<DelayNode | null>(null);
+  useEffect(() => {
+    if (songDelayRef.current) songDelayRef.current.delayTime.value = Math.max(0, syncMs) / 1000;
+    if (micDelayRef.current) micDelayRef.current.delayTime.value = Math.max(0, -syncMs) / 1000;
+    // Only the SONG being delayed pushes the overlay late; a delayed mic (syncMs<0)
+    // leaves the song — and thus the overlay — untouched.
+    syncSecRef.current = Math.max(0, syncMs) / 1000;
+    try {
+      localStorage.setItem("cmk.camSyncMs", String(syncMs));
+    } catch {
+      /* ignore */
+    }
+  }, [syncMs]);
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -266,7 +297,10 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
           drawCover(ctx, v, REC_W, REC_H);
           ctx.restore();
           // Chord ribbon (un-mirrored so it reads correctly), like the app timeline.
-          drawRibbon(ctx, REC_W, REC_H, segRef.current, engine.getTime(), transRef.current);
+          // While recording, drawn syncSec "late" so the burned-in chords track the
+          // delayed song; in live preview it stays locked to the (undelayed) speakers.
+          const shift = recordingRef.current ? syncSecRef.current * engine.playbackRate : 0;
+          drawRibbon(ctx, REC_W, REC_H, segRef.current, engine.getTime() - shift, transRef.current);
           schedule();
         };
         const schedule = () => {
@@ -340,15 +374,23 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
       const dest = ctx.createMediaStreamDestination();
       const micSrc = ctx.createMediaStreamSource(camStream);
       // Mix song + mic into one audio track, each through its own level control
-      // (adjustable live from the 🎤/♪ sliders while recording).
+      // (adjustable live from the 🎤/♪ sliders while recording) + a delay stage
+      // that lines up the late-captured mic with the song (Sync slider). These
+      // taps feed the RECORDING sink only, never the speakers.
       const micGain = ctx.createGain();
       const songGain = ctx.createGain();
       micGain.gain.value = micVol;
       songGain.gain.value = songVol;
       micGainRef.current = micGain;
       songGainRef.current = songGain;
-      songSrc.connect(songGain).connect(dest);
-      micSrc.connect(micGain).connect(dest);
+      const songDelay = ctx.createDelay(1);
+      const micDelay = ctx.createDelay(1);
+      songDelay.delayTime.value = Math.max(0, syncMs) / 1000;
+      micDelay.delayTime.value = Math.max(0, -syncMs) / 1000;
+      songDelayRef.current = songDelay;
+      micDelayRef.current = micDelay;
+      songSrc.connect(songGain).connect(songDelay).connect(dest);
+      micSrc.connect(micGain).connect(micDelay).connect(dest);
 
       const canvasStream = canvas.captureStream(30);
       const mixed = new MediaStream([
@@ -368,13 +410,17 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
         try {
           songSrc.disconnect(songGain);
           songGain.disconnect();
+          songDelay.disconnect();
           micSrc.disconnect();
           micGain.disconnect();
+          micDelay.disconnect();
         } catch {
           /* already torn down */
         }
         micGainRef.current = null;
         songGainRef.current = null;
+        songDelayRef.current = null;
+        micDelayRef.current = null;
         recTeardownRef.current = null;
       };
       rec.onstop = async () => {
@@ -404,7 +450,7 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
     } catch (e) {
       setError(`Couldn't start recording: ${String(e)}`);
     }
-  }, [engine, micVol, songVol]);
+  }, [engine, micVol, songVol, syncMs]);
 
   const stopRecording = useCallback(() => {
     const r = recRef.current;
@@ -526,6 +572,22 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
               onChange={(e) => setSongVol(Number(e.target.value))}
               className="w-16 accent-[var(--accent)]"
             />
+          </label>
+          <label
+            className="flex shrink-0 items-center gap-1 text-[11px] text-muted"
+            title="Line up your recorded playing with the song. If your instrument sounds LATE in the video, increase it; if early, decrease. Speakers are never delayed — recording only."
+          >
+            ⏱
+            <input
+              type="range"
+              min={-150}
+              max={400}
+              step={5}
+              value={syncMs}
+              onChange={(e) => setSyncMs(Number(e.target.value))}
+              className="w-16 accent-[var(--accent)]"
+            />
+            <span className="w-9 tabular-nums text-right text-[10px]">{syncMs > 0 ? `+${syncMs}` : syncMs}</span>
           </label>
           {recording ? (
             <button
