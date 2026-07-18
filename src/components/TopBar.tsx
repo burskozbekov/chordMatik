@@ -1,6 +1,7 @@
 import { Button } from "@heroui/react";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
+import { UpdateControl } from "./UpdateControl";
 import { UploadIcon } from "./icons";
 import type { ThemeMode } from "../hooks/useTheme";
 
@@ -31,6 +32,8 @@ export function TopBar({ theme, onToggleTheme, onOpenFile, onOpenTuner, onOpenMe
           <UploadIcon className="size-4" />
           <span className="hidden sm:inline">Open</span>
         </Button>
+
+        <UpdateControl />
 
         <ThemeToggle theme={theme} onToggle={onToggleTheme} />
       </div>

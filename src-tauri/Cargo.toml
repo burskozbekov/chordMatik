@@ -1,6 +1,6 @@
 [package]
 name = "chordmatik"
-version = "0.1.1"
+version = "0.1.2"
 description = "On-device automatic chord recognition for songs you own."
 authors = ["chordMatik"]
 edition = "2021"
@@ -46,6 +46,7 @@ rustfft = "6"
 # hound: tiny WAV writer. Cross-platform so the capture module compiles
 # everywhere; symphonia reads the WAV back in the analyze path.
 hound = "3.5"
+tauri-plugin-process = "2.3.1"
 
 # --- macOS system-audio capture ("record chords from the playing video") ---
 # screencapturekit: safe bindings to ScreenCaptureKit. Captures the audio

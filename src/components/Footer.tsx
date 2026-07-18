@@ -3,7 +3,11 @@ import { appInfo, isTauri } from "../lib/tauri";
 import type { AppMeta } from "../lib/types";
 import { ShieldIcon } from "./icons";
 
-/** Slim status footer: privacy reassurance + version/OS (via the app_info command). */
+/**
+ * Slim status footer: privacy reassurance + version/OS.
+ * NOTE: currently not mounted in `App.tsx` — the update control that used to
+ * live here now sits in the top bar (`UpdateControl`).
+ */
 export function Footer() {
   const [meta, setMeta] = useState<AppMeta | null>(null);
   useEffect(() => {

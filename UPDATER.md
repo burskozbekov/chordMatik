@@ -86,17 +86,47 @@ a tag push alone no longer publishes anything.
    before notarizing it, or Gatekeeper rejects the DMG container itself.
 5. Verify: `spctl -a -vvv -t exec macos/chordMatik.app` → `accepted ·
    source=Notarized Developer ID`, and `stapler validate` both artifacts.
-6. Publish — hand-write `latest.json` and create the release:
+6. Publish — one command (from the repo root):
    ```bash
+   ./scripts/publish-release.sh
+   ```
+   It reads the version from `tauri.conf.json`, generates `latest.json` from the
+   `.sig`, and creates the release with all assets. Safe to re-run (replaces
+   assets on an existing tag).
+
+   **It also uploads a stable-named copy of the DMG**, so the public download
+   link never changes between releases — this is the link to put on the site /
+   README / anywhere users click:
+
+   ```
+   https://github.com/burskozbekov/chordMatik/releases/latest/download/chordMatik-macOS-arm64.dmg
+   ```
+
+   Clicking it downloads the installer directly (no GitHub page). Keep the
+   `chordMatik-macOS-arm64.dmg` name identical in every release or the link breaks.
+
+   <details><summary>Manual equivalent (if the script is unavailable)</summary>
+
+   ```bash
+   cp dmg/chordMatik_X.Y.Z_aarch64.dmg dmg/chordMatik-macOS-arm64.dmg
+   # NOTE: `gh`'s file#name syntax sets the asset LABEL, not its name — the
+   # updater downloads by filename, so copy to the exact names first.
+   cp macos/chordMatik.app.tar.gz     macos/chordMatik_aarch64.app.tar.gz
+   cp macos/chordMatik.app.tar.gz.sig macos/chordMatik_aarch64.app.tar.gz.sig
    gh release create vX.Y.Z --target main \
      dmg/chordMatik_X.Y.Z_aarch64.dmg \
-     macos/chordMatik.app.tar.gz#chordMatik_aarch64.app.tar.gz \
-     macos/chordMatik.app.tar.gz.sig#chordMatik_aarch64.app.tar.gz.sig \
+     dmg/chordMatik-macOS-arm64.dmg \
+     macos/chordMatik_aarch64.app.tar.gz \
+     macos/chordMatik_aarch64.app.tar.gz.sig \
      latest.json
    ```
+   Then confirm `…/releases/download/vX.Y.Z/chordMatik_aarch64.app.tar.gz`
+   returns **200** — a manifest pointing at a 404 silently kills auto-update.
    `latest.json` shape: `{"version":"X.Y.Z","platforms":{"darwin-aarch64":
    {"signature":"<contents of the .sig>","url":"https://github.com/burskozbekov/chordMatik/releases/download/vX.Y.Z/chordMatik_aarch64.app.tar.gz"}}}`
    (upload the tar.gz under the exact name `chordMatik_aarch64.app.tar.gz`).
+   </details>
+
    Done — installed apps silently update on next launch.
 
 ### Building/signing locally instead of CI

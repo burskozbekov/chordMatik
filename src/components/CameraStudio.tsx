@@ -4,7 +4,7 @@ import type { ChordSegment } from "../lib/types";
 import { chordDisplay } from "../lib/chords";
 import { getAudioContext } from "../lib/audioContext";
 import { saveRecording } from "../lib/tauri";
-import { CloseIcon, PauseIcon, PlayIcon } from "./icons";
+import { CloseIcon, GaugeIcon, PauseIcon, PlayIcon } from "./icons";
 
 /**
  * Webcam studio: a live mirrored self-view (PiP) composited with the current
@@ -248,6 +248,12 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  // True from "Stop" until the save dialog resolves — without this the UI looks
+  // frozen while the blob is assembled and the native picker opens.
+  const [saving, setSaving] = useState(false);
+  // Mix/sync sliders are secondary: collapsed by default so Record is the
+  // obvious primary action (they used to overflow the panel and hide it).
+  const [mixOpen, setMixOpen] = useState(false);
 
   // Acquire the camera + start the composite draw loop on mount; tear down on unmount.
   useEffect(() => {
@@ -433,6 +439,7 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
         const blob = new Blob(chunksRef.current, { type: outMime });
         chunksRef.current = [];
         const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+        setSaving(true);
         try {
           const ok = await saveRecording(
             new Uint8Array(await blob.arrayBuffer()),
@@ -442,6 +449,8 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
           if (ok) setSaved(true);
         } catch (e) {
           setError(`Couldn't save: ${String(e)}`);
+        } finally {
+          setSaving(false);
         }
       };
       rec.start(1000); // 1s timeslice → periodic flush, more robust than one giant blob
@@ -486,8 +495,22 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
   const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");
 
+  // One line that always says what to do next — the old copy never told you
+  // that Record (or Space) was how you start.
+  const statusText = saving
+    ? "Choose where to save…"
+    : saved
+      ? "Saved ✓"
+      : recording
+        ? engine.isPlaying
+          ? "Recording…"
+          : "Paused — press play"
+        : ready
+          ? "Hit Record (or press Space)"
+          : "Starting camera…";
+
   return (
-    <div className="fixed bottom-4 right-4 z-[90] w-72 select-none">
+    <div className="fixed bottom-4 right-4 z-[90] w-80 select-none">
       <video ref={videoRef} className="hidden" playsInline muted />
       <div className="glass overflow-hidden rounded-2xl shadow-overlay">
         <div className="relative aspect-video w-full bg-black">
@@ -521,6 +544,7 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
           )}
         </div>
 
+        {/* Primary row — Record is always visible and never squeezed. */}
         <div className="flex items-center gap-2 px-2.5 py-2">
           <button
             type="button"
@@ -534,66 +558,30 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
               <PlayIcon className="size-4 translate-x-px" />
             )}
           </button>
-          <span className="min-w-0 flex-1 truncate text-[11px] text-muted">
-            {saved
-              ? "Saved ✓"
-              : recording
-                ? engine.isPlaying
-                  ? "Recording…"
-                  : "Paused"
-                : "Chords burned into the video"}
-          </span>
-          <label
-            className="flex shrink-0 items-center gap-1 text-[11px] text-muted"
-            title="Your instrument's level in the recording (mic)"
+
+          <span className="min-w-0 flex-1 truncate text-[11px] text-muted">{statusText}</span>
+
+          <button
+            type="button"
+            onClick={() => setMixOpen((v) => !v)}
+            aria-label="Recording mix and sync"
+            aria-expanded={mixOpen}
+            title="Mic / song levels + A-V sync (recording only)"
+            className={`grid size-7 shrink-0 place-items-center rounded-lg border transition-colors ${
+              mixOpen
+                ? "border-accent/60 bg-accent/15 text-accent"
+                : "border-border bg-surface text-muted hover:text-foreground"
+            }`}
           >
-            🎤
-            <input
-              type="range"
-              min={0}
-              max={2}
-              step={0.05}
-              value={micVol}
-              onChange={(e) => setMicVol(Number(e.target.value))}
-              className="w-16 accent-[var(--accent)]"
-            />
-          </label>
-          <label
-            className="flex shrink-0 items-center gap-1 text-[11px] text-muted"
-            title="The song's level in the recording"
-          >
-            ♪
-            <input
-              type="range"
-              min={0}
-              max={2}
-              step={0.05}
-              value={songVol}
-              onChange={(e) => setSongVol(Number(e.target.value))}
-              className="w-16 accent-[var(--accent)]"
-            />
-          </label>
-          <label
-            className="flex shrink-0 items-center gap-1 text-[11px] text-muted"
-            title="Line up your recorded playing with the song. If your instrument sounds LATE in the video, increase it; if early, decrease. Speakers are never delayed — recording only."
-          >
-            ⏱
-            <input
-              type="range"
-              min={-150}
-              max={400}
-              step={5}
-              value={syncMs}
-              onChange={(e) => setSyncMs(Number(e.target.value))}
-              className="w-16 accent-[var(--accent)]"
-            />
-            <span className="w-9 tabular-nums text-right text-[10px]">{syncMs > 0 ? `+${syncMs}` : syncMs}</span>
-          </label>
+            <GaugeIcon className="size-4" />
+          </button>
+
           {recording ? (
             <button
               type="button"
               onClick={stopRecording}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-red-500 px-3 py-1.5 text-xs font-semibold text-white transition-opacity hover:opacity-90"
+              title="Stop and save"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-red-500 px-3 py-1.5 text-xs font-semibold text-white transition-opacity hover:opacity-90"
             >
               <span className="size-2.5 rounded-[2px] bg-white" />
               Stop
@@ -602,15 +590,95 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
             <button
               type="button"
               onClick={startRecording}
-              disabled={!ready}
-              className="cta-gradient inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold outline-none disabled:opacity-50"
+              disabled={!ready || saving}
+              title="Start recording (Space)"
+              className="cta-gradient inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold outline-none disabled:opacity-50"
             >
               <span className="size-2.5 rounded-full bg-red-500" />
               Record
             </button>
           )}
         </div>
+
+        {/* Secondary row — collapsed by default; full-width sliders when open. */}
+        {mixOpen && (
+          <div className="flex flex-col gap-1.5 border-t border-border/60 px-2.5 py-2">
+            <MixRow
+              icon="🎤"
+              label="Your instrument's level in the recording (mic)"
+              min={0}
+              max={2}
+              step={0.05}
+              value={micVol}
+              onChange={setMicVol}
+              display={`${Math.round(micVol * 100)}%`}
+            />
+            <MixRow
+              icon="♪"
+              label="The song's level in the recording"
+              min={0}
+              max={2}
+              step={0.05}
+              value={songVol}
+              onChange={setSongVol}
+              display={`${Math.round(songVol * 100)}%`}
+            />
+            <MixRow
+              icon="⏱"
+              label="Line up your recorded playing with the song. If your instrument sounds LATE in the video, increase it; if early, decrease. Speakers are never delayed — recording only."
+              min={-150}
+              max={400}
+              step={5}
+              value={syncMs}
+              onChange={setSyncMs}
+              display={`${syncMs > 0 ? "+" : ""}${syncMs}ms`}
+            />
+            <p className="pt-0.5 text-[10px] leading-snug text-muted">
+              Affects the recording only — your speakers stay untouched.
+            </p>
+          </div>
+        )}
       </div>
     </div>
+  );
+}
+
+/** One full-width labelled slider in the collapsible mix panel. */
+function MixRow({
+  icon,
+  label,
+  min,
+  max,
+  step,
+  value,
+  onChange,
+  display,
+}: {
+  icon: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onChange: (n: number) => void;
+  display: string;
+}) {
+  return (
+    <label className="flex items-center gap-2 text-[11px] text-muted" title={label}>
+      <span aria-hidden className="w-4 shrink-0 text-center">
+        {icon}
+      </span>
+      <input
+        type="range"
+        aria-label={label}
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="min-w-0 flex-1 accent-[var(--accent)]"
+      />
+      <span className="w-12 shrink-0 text-right tabular-nums text-[10px]">{display}</span>
+    </label>
   );
 }

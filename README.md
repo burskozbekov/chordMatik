@@ -1,11 +1,18 @@
 # chordMatik
 
-Offline, on-device automatic **chord recognition & practice** for songs you own.
-Load a local audio file → chordMatik analyzes it fully on your machine → an
-interactive, synced chord timeline with diagrams, transpose/capo, and practice loops.
+Offline, on-device automatic **chord recognition & practice**.
+Load a song → chordMatik analyzes it on your machine → an interactive, synced
+chord timeline with diagrams, transpose/capo, and practice loops.
 
-> Private by design: no uploads, no streaming, no accounts. chordMatik only
-> analyzes **local audio files you own**.
+## ⬇️ Download
+
+### **[Download chordMatik for macOS (Apple Silicon)](https://github.com/burskozbekov/chordMatik/releases/latest/download/chordMatik-macOS-arm64.dmg)**
+
+Direct download — always the latest version. Open the `.dmg` and drag **chordMatik**
+into **Applications**. The app is signed + notarized by Apple, so it just opens (no
+Gatekeeper warning), and it **auto-updates** silently from then on.
+
+<sub>Apple Silicon (M1/M2/M3/M4) · macOS 11+ · [all releases](https://github.com/burskozbekov/chordMatik/releases)</sub>
 
 ## Stack
 

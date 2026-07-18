@@ -17,6 +17,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Lets the footer's "Restart now" apply a staged update immediately.
+        .plugin(tauri_plugin_process::init())
         .manage(commands::CaptureState::default())
         .manage(commands::LiveState::default())
         .setup(|app| {
