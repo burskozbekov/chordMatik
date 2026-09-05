@@ -127,3 +127,23 @@ export function feltTempo(
   }
   return Math.round(best);
 }
+
+/**
+ * Whether a persisted tab-sync tempo may be RE-DERIVED (it was chosen
+ * automatically and the user never touched it) or must be kept (a manual pick is
+ * final). The felt octave is often decided when the tab loads — BEFORE the chord
+ * analysis exists — so an "auto" value has to stay open to the evidence.
+ *  - v ≥ 6 saves carry an explicit `bpmAuto` flag.
+ *  - v 5 saves are auto when they equal the evidence-free derivation: that
+ *    version persisted whatever octave was picked at tab-load time, blind.
+ *  - older saves predate the felt-octave logic and are always re-derived.
+ */
+export function savedBpmIsAuto(
+  saved: { bpm: number; bpmAuto?: boolean; v?: number },
+  notated: number,
+): boolean {
+  const v = saved.v ?? 0;
+  if (v >= 6) return saved.bpmAuto === true;
+  if (v === 5) return saved.bpm === feltTempo(notated);
+  return true;
+}

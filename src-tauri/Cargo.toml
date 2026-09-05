@@ -1,6 +1,6 @@
 [package]
 name = "chordmatik"
-version = "0.1.2"
+version = "0.1.3"
 description = "On-device automatic chord recognition for songs you own."
 authors = ["chordMatik"]
 edition = "2021"

@@ -393,19 +393,23 @@ fn analyze_with_cache(
     path: &str,
     model_path: &Path,
     ephemeral: bool,
+    force: bool,
 ) -> Result<ChordAnalysis, String> {
     let hash = cache::hash_file(Path::new(path)).ok();
 
-    // Cache hit → instant.
-    if let Some(h) = &hash {
-        if let Some(entry) = cache::load(app, h) {
-            return Ok(ChordAnalysis {
-                engine: entry.engine,
-                frame_hop_sec: entry.frame_hop_sec,
-                duration_sec: entry.duration_sec,
-                segments: entry.segments,
-                bpm: entry.bpm,
-            });
+    // Cache hit → instant. `force` (the Re-analyze button) skips this so the
+    // engine really runs again instead of handing back the same cached result.
+    if !force {
+        if let Some(h) = &hash {
+            if let Some(entry) = cache::load(app, h) {
+                return Ok(ChordAnalysis {
+                    engine: entry.engine,
+                    frame_hop_sec: entry.frame_hop_sec,
+                    duration_sec: entry.duration_sec,
+                    segments: entry.segments,
+                    bpm: entry.bpm,
+                });
+            }
         }
     }
 
@@ -445,11 +449,13 @@ pub async fn analyze_chords(
     app: tauri::AppHandle,
     path: String,
     ephemeral: Option<bool>,
+    force: Option<bool>,
 ) -> Result<ChordAnalysis, String> {
     let model_path = btc_model_path(&app);
     let ephemeral = ephemeral.unwrap_or(false);
+    let force = force.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
-        analyze_with_cache(&app, &path, &model_path, ephemeral)
+        analyze_with_cache(&app, &path, &model_path, ephemeral, force)
     })
     .await
     .map_err(|e| format!("analysis task failed: {e}"))?
@@ -585,6 +591,21 @@ fn sweep_temp_audio(dir: &Path) {
             }
         }
     }
+}
+
+/// yt-dlp `--print` template for the fields `compose_video_title` needs.
+const TITLE_PRINT_TEMPLATE: &str = "%(title)s\t%(artist)s\t%(uploader)s";
+
+/// Parse the first non-empty `TITLE_PRINT_TEMPLATE` line yt-dlp printed into a
+/// composed "Artist - Title" (None when nothing usable was printed).
+fn parse_title_line(stdout: &str) -> Option<String> {
+    let line = stdout.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let mut parts = line.split('\t');
+    let raw = parts.next().unwrap_or("").trim();
+    let artist = parts.next().unwrap_or("").trim();
+    let uploader = parts.next().unwrap_or("").trim();
+    let composed = compose_video_title(raw, artist, uploader);
+    (!composed.is_empty()).then_some(composed)
 }
 
 /// Compose a search-friendly "Artist - Title" from YouTube metadata when the
@@ -753,6 +774,9 @@ pub async fn download_youtube_audio(
         let base_path = std::env::var("PATH").unwrap_or_default();
         let aug_path = format!("/opt/homebrew/bin:/usr/local/bin:/usr/bin:{base_path}");
 
+        // Title/artist/uploader printed by the download run itself (see below).
+        let mut printed_title: Option<String> = None;
+
         // 1) Download a small, webview-playable mp4 (h264/aac ≤480p) — UNLESS we
         // already have it. Reusing avoids deleting the file the <video> element
         // may still be streaming (re-pasting the same link) and is instant.
@@ -796,6 +820,12 @@ pub async fn download_youtube_audio(
                     "3",
                     "--extractor-args",
                     &ea,
+                    // Print the metadata in the SAME run (--print implies --quiet,
+                    // so stdout carries only this line; --no-simulate keeps the
+                    // download going) — saves a second yt-dlp round trip per song.
+                    "--no-simulate",
+                    "--print",
+                    TITLE_PRINT_TEMPLATE,
                     "--ffmpeg-location",
                 ])
                 .arg(&ffmpeg)
@@ -804,6 +834,9 @@ pub async fn download_youtube_audio(
                 .arg(&url);
                 let output = run_with_timeout(cmd, Duration::from_secs(180))?;
                 if nonempty(&out_mp4) {
+                    if let Some(t) = parse_title_line(&String::from_utf8_lossy(&output.stdout)) {
+                        printed_title = Some(t);
+                    }
                     break;
                 }
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -816,7 +849,12 @@ pub async fn download_youtube_audio(
             }
 
             if !nonempty(&out_mp4) {
-                return Err(format!("Couldn't get the video from YouTube. {last_err}"));
+                // YouTube changes its player regularly and only a CURRENT yt-dlp
+                // keeps up — an outdated one is by far the most common cause here,
+                // so say so instead of leaving the user to guess.
+                return Err(format!(
+                    "Couldn't get the video from YouTube. {last_err} If this keeps happening, update yt-dlp (brew upgrade yt-dlp)."
+                ));
             }
         }
 
@@ -850,32 +888,30 @@ pub async fn download_youtube_audio(
         let title = match std::fs::read_to_string(&title_cache) {
             Ok(t) if !t.trim().is_empty() => t.trim().to_string(),
             _ => {
-                let mut t = Command::new(&ytdlp);
-                t.env("PATH", &aug_path);
-                t.args([
-                    "--skip-download",
-                    "--no-playlist",
-                    "--no-warnings",
-                    "--socket-timeout",
-                    "20",
-                    "--extractor-args",
-                    "youtube:player_client=tv,default",
-                    "--print",
-                    "%(title)s\t%(artist)s\t%(uploader)s",
-                ])
-                .arg(&url);
-                let fetched = run_with_timeout(t, Duration::from_secs(40))
-                    .ok()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .map(|line| {
-                        let mut parts = line.split('\t');
-                        let raw = parts.next().unwrap_or("").trim().to_string();
-                        let artist = parts.next().unwrap_or("").trim().to_string();
-                        let uploader = parts.next().unwrap_or("").trim().to_string();
-                        compose_video_title(&raw, &artist, &uploader)
-                    })
-                    .filter(|s| !s.is_empty());
+                // Prefer the metadata the download run already printed; only an
+                // mp4 reused from disk (no download this time) needs its own call.
+                let fetched = match printed_title {
+                    Some(t) => Some(t),
+                    None => {
+                        let mut t = Command::new(&ytdlp);
+                        t.env("PATH", &aug_path);
+                        t.args([
+                            "--skip-download",
+                            "--no-playlist",
+                            "--no-warnings",
+                            "--socket-timeout",
+                            "20",
+                            "--extractor-args",
+                            "youtube:player_client=tv,default",
+                            "--print",
+                            TITLE_PRINT_TEMPLATE,
+                        ])
+                        .arg(&url);
+                        run_with_timeout(t, Duration::from_secs(40))
+                            .ok()
+                            .and_then(|o| parse_title_line(&String::from_utf8_lossy(&o.stdout)))
+                    }
+                };
                 if let Some(ref s) = fetched {
                     let _ = std::fs::write(&title_cache, s);
                 }

@@ -260,11 +260,16 @@ export function appInfo(): Promise<AppMeta> {
 }
 
 /**
- * Analyze a file and return its chord timeline. `ephemeral` (captured audio)
- * is never cached and is deleted from disk right after analysis.
+ * Analyze a file and return its chord timeline. `ephemeral` (downloaded/captured
+ * audio) keeps the entry out of the library; `force` bypasses the on-disk cache
+ * so the engine actually runs again (the Re-analyze button).
  */
-export function analyzeChords(path: string, ephemeral = false): Promise<ChordAnalysis> {
-  return invoke<ChordAnalysis>("analyze_chords", { path, ephemeral });
+export function analyzeChords(
+  path: string,
+  ephemeral = false,
+  force = false,
+): Promise<ChordAnalysis> {
+  return invoke<ChordAnalysis>("analyze_chords", { path, ephemeral, force });
 }
 
 /** Previously analyzed songs (local library), newest first. */

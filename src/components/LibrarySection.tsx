@@ -3,6 +3,13 @@ import { useAppState } from "../state/AppState";
 import { formatTime } from "../lib/format";
 import { ChordMarkIcon, CloseIcon } from "./icons";
 
+/** Short label for the engine that produced a cached analysis. */
+function engineLabel(engine: string): string {
+  if (engine === "chordnet") return "ChordNet";
+  if (engine === "btc") return "BTC";
+  return "built-in";
+}
+
 /** "Recent songs" list backed by the on-disk analysis cache. */
 export function LibrarySection() {
   const { library, openPath, removeFromLibrary } = useAppState();
@@ -40,7 +47,7 @@ export function LibrarySection() {
                 </span>
                 <span className="block truncate text-[11px] text-muted">
                   {formatTime(item.durationSec)} · {item.chordCount} chords ·{" "}
-                  {item.engine === "btc" ? "BTC" : "built-in"}
+                  {engineLabel(item.engine)}
                 </span>
               </span>
             </button>

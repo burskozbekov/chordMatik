@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { detectBeat, fetchTabs, fetchTabTrack, openTabFile, trackBeats } from "../lib/tauri";
 import { useAiBass as useAiBassTranscription } from "../hooks/useAiBass";
-import { feltTempo } from "../lib/feltTempo";
+import { feltTempo, savedBpmIsAuto } from "../lib/feltTempo";
 import { bassFromChords, bassFromTranscription } from "../lib/bassFromChords";
 import { tabAgreement } from "../lib/tabMatch";
 import { useAppState } from "../state/AppState";
@@ -22,6 +22,25 @@ import { useSyncHistory } from "../hooks/useSyncHistory";
 
 type State = "idle" | "loading" | "done" | "none";
 const INSTRUMENTS: TabInstrument[] = ["guitar", "bass", "piano", "drums"];
+/** The instrument the user last picked — remembered across songs (a bassist
+ *  shouldn't have to click "bass" on every new tab). */
+const TAB_INSTRUMENT_KEY = "cmk.tabInstrument";
+function preferredInstrument(): TabInstrument | null {
+  try {
+    const v = localStorage.getItem(TAB_INSTRUMENT_KEY);
+    return INSTRUMENTS.includes(v as TabInstrument) ? (v as TabInstrument) : null;
+  } catch {
+    return null;
+  }
+}
+/** First instrument to show for a fetched result: the remembered pick when the
+ *  song offers it (bass always does — generated/AI/rated bass fall back), else
+ *  the first instrument the tab actually has. */
+function initialInstrument(r: TabResult): TabInstrument {
+  const pref = preferredInstrument();
+  if (pref && (r[pref] || pref === "bass")) return pref;
+  return INSTRUMENTS.find((k) => r[k]) ?? "guitar";
+}
 /** Use the chord-DTW warp (drift-following) only when it's at least this confident;
  *  below it we fall back to the straight constant-tempo map (a bad warp is worse). */
 const WARP_MIN_CONFIDENCE = 0.45;
@@ -58,6 +77,17 @@ export function TabsPanel({ title }: { title: string }) {
   const [state, setState] = useState<State>("idle");
   const [result, setResult] = useState<TabResult | null>(null);
   const [which, setWhich] = useState<TabInstrument>("guitar");
+  // A USER's instrument pick (segmented control, "start … tab here", bass buttons)
+  // is remembered for future songs; automatic switches (result load, keep-valid)
+  // go through plain setWhich so they never overwrite the preference.
+  const chooseInstrument = (t: TabInstrument) => {
+    setWhich(t);
+    try {
+      localStorage.setItem(TAB_INSTRUMENT_KEY, t);
+    } catch {
+      /* ignore */
+    }
+  };
   const [notation, setNotation] = useState(false);
   // ONE bass source (a single segmented control, not 4 mutually-fighting toggles):
   //  songsterr = the structured Songsterr bass tab (default, follows playback)
@@ -72,6 +102,10 @@ export function TabsPanel({ title }: { title: string }) {
   const [startSec, setStartSec] = useState(0);
   const [bpm, setBpm] = useState(120);
   const [drift, setDrift] = useState(true);
+  // The start as of the latest render, for effects that must know whether a
+  // queued setStartSec will actually change state (see the restore effect).
+  const startSecRef = useRef(startSec);
+  startSecRef.current = startSec;
   const [refined, setRefined] = useState<SyncResult | null>(null);
   const [guessing, setGuessing] = useState(false);
   const [onsets, setOnsets] = useState<number[]>([]);
@@ -131,7 +165,7 @@ export function TabsPanel({ title }: { title: string }) {
               if (alt) {
                 if (saved.manual) userPickRef.current = title;
                 setResult({ ...alt, candidates: r.candidates });
-                setWhich(INSTRUMENTS.find((k) => alt[k]) ?? "guitar");
+                setWhich(initialInstrument(alt));
                 setState("done");
                 return;
               }
@@ -141,7 +175,7 @@ export function TabsPanel({ title }: { title: string }) {
           }
           if (cancelled) return;
           setResult(r);
-          setWhich(INSTRUMENTS.find((k) => r[k]) ?? "guitar");
+          setWhich(initialInstrument(r));
           setState("done");
         } else {
           setState("none");
@@ -246,7 +280,7 @@ export function TabsPanel({ title }: { title: string }) {
   const { aiNotes, aiState, hqReady, hqProgress, runAiBass, enableHq } = useAiBassTranscription(
     song?.path,
     () => {
-      setWhich("bass");
+      chooseInstrument("bass");
       setBassSource("ai");
     },
     () => setBassSource("songsterr"),
@@ -323,6 +357,17 @@ export function TabsPanel({ title }: { title: string }) {
   // waits for it, so a syncKey switch can't persist the PREVIOUS song's numbers
   // under the new key during the one-commit gap.
   const seedApplyRef = useRef<{ key: string; value: number } | null>(null);
+  // Tracks the last AUTO-derived tempo for this syncKey. While bpm still equals
+  // it (the user hasn't touched ×2/÷2/±), a later chord analysis may re-derive
+  // the felt octave — the evidence (harmonic rhythm, measured tempo) routinely
+  // lands AFTER the tab does, and an octave picked blind must not be locked in.
+  const bpmSeedRef = useRef<{ key: string; value: number } | null>(null);
+  /** Set an automatically-derived tempo (re-derivable until the user edits it). */
+  const setAutoBpm = (v: number) => {
+    bpmSeedRef.current = syncKey ? { key: syncKey, value: v } : null;
+    setBpm(v);
+  };
+  const analysisReady = !!analysis?.segments?.length;
   useEffect(() => {
     if (!syncKey) return;
     // A just-picked "start from a chord" (that switched instrument) overrides the
@@ -330,6 +375,19 @@ export function TabsPanel({ title }: { title: string }) {
     const pending = pendingStartRef.current;
     pendingStartRef.current = null;
     if (pending != null && !engine.isPlaying) engine.seek(pending);
+    const derived = feltTempo(baseTempo, analysis?.segments, onsets, analysis?.bpm);
+    // Queue a start for the save effect ONLY when it actually changes state: a
+    // no-op setStartSec never renders, so a queued seed would wait forever and
+    // the save effect would silently drop every later edit for this key.
+    const queueStart = (v: number) => {
+      seedApplyRef.current =
+        Math.abs(v - startSecRef.current) > 1e-9 ? { key: syncKey, value: v } : null;
+      setStartSec(v);
+    };
+    const seedBpm = (v: number) => {
+      bpmSeedRef.current = { key: syncKey, value: v };
+      setBpm(v);
+    };
     try {
       const saved = JSON.parse(localStorage.getItem(syncKey) || "null");
       if (saved && typeof saved.startSec === "number" && typeof saved.bpm === "number") {
@@ -340,20 +398,18 @@ export function TabsPanel({ title }: { title: string }) {
           pending != null ? pending : saved.auto === true ? firstChordSec : saved.startSec;
         autoSeedRef.current =
           pending == null && saved.auto === true ? { key: syncKey, value: restored } : null;
-        seedApplyRef.current = { key: syncKey, value: restored };
-        setStartSec(restored);
-        // Migrate pre-felt saves: an old auto-seed stored the raw (often doubled)
-        // Songsterr tempo. If the saved BPM is exactly that raw value and predates
-        // the felt-octave logic (no v), octave-correct it. User-adjusted values
-        // (≠ raw) and new saves (v≥2) are respected as-is.
-        // Re-derive BPM with the measured-tempo logic for older saves (v<4) so
-        // existing songs get the right felt octave automatically; the user's manual
-        // START is always kept. v≥4 saves (already measured-derived) are trusted.
-        setBpm(
-          saved.v >= 5
-            ? saved.bpm
-            : feltTempo(baseTempo, analysis?.segments, onsets, analysis?.bpm),
-        );
+        queueStart(restored);
+        // Tempo: a USER-set BPM is final. An AUTO-derived one is re-derived now
+        // that (maybe) more evidence exists — v6 saves carry the flag; a v5 save
+        // is auto when it equals the evidence-free derivation (that logic picked
+        // the octave blind whenever the tab loaded before the analysis); older
+        // saves predate the felt-octave logic and are always re-derived.
+        if (savedBpmIsAuto(saved, baseTempo)) {
+          seedBpm(derived);
+        } else {
+          bpmSeedRef.current = null;
+          setBpm(saved.bpm);
+        }
         // Drift-following is now ON by default; re-default older saves (v<3) to on
         // so already-synced songs stop drifting too. v≥3 respects the user's choice.
         setDrift(saved.v >= 3 ? !!saved.drift : true);
@@ -365,12 +421,13 @@ export function TabsPanel({ title }: { title: string }) {
     // Fresh song: seed from the first detected chord; the chord-alignment effect
     // below upgrades this to the tab's true entry as soon as it's available.
     autoSeedRef.current = pending == null ? { key: syncKey, value: firstChordSec } : null;
-    seedApplyRef.current = { key: syncKey, value: pending ?? firstChordSec };
-    setStartSec(pending ?? firstChordSec);
-    setBpm(feltTempo(baseTempo, analysis?.segments, onsets, analysis?.bpm));
+    queueStart(pending ?? firstChordSec);
+    seedBpm(derived);
     setDrift(true);
+    // analysisReady: re-run once the chord analysis lands so an auto tempo gets
+    // its evidence (and firstChordSec may not change when the first chord is at 0).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncKey, firstChordSec, baseTempo]);
+  }, [syncKey, firstChordSec, baseTempo, analysisReady]);
   useEffect(() => {
     if (!syncKey) return;
     // A freshly-queued seed hasn't rendered yet — saving now would persist the
@@ -382,8 +439,13 @@ export function TabsPanel({ title }: { title: string }) {
     }
     const seed = autoSeedRef.current;
     const auto = seed?.key === syncKey && Math.abs(startSec - seed.value) < 0.0005;
+    const bseed = bpmSeedRef.current;
+    const bpmAuto = bseed?.key === syncKey && bseed.value === bpm;
     try {
-      localStorage.setItem(syncKey, JSON.stringify({ startSec, bpm, drift, auto, v: 5 }));
+      localStorage.setItem(
+        syncKey,
+        JSON.stringify({ startSec, bpm, drift, auto, bpmAuto, v: 6 }),
+      );
     } catch {
       /* ignore */
     }
@@ -567,7 +629,10 @@ export function TabsPanel({ title }: { title: string }) {
   const startRef = useRef(startSec);
   startRef.current = startSec;
   const activeRef = useRef(false);
-  activeRef.current = state === "done" && !!activeTrack;
+  // A custom (Guitar Pro / MusicXML) tab is synced by the same start marker, so
+  // M / R / ←→ must serve it too — and claim the arrows, or one press would both
+  // nudge the start (SyncEditor) AND seek the song ±5 s (app-level shortcut).
+  activeRef.current = (state === "done" && !!activeTrack) || !!customTab;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!activeRef.current) return;
@@ -621,7 +686,7 @@ export function TabsPanel({ title }: { title: string }) {
       // Switching instrument reloads the saved start — defer the pick so the
       // restore effect applies it instead of clobbering it.
       pendingStartRef.current = v;
-      setWhich(target);
+      chooseInstrument(target);
     } else {
       setStartSec(v);
       if (!engine.isPlaying) engine.seek(v);
@@ -668,7 +733,7 @@ export function TabsPanel({ title }: { title: string }) {
             <button
               type="button"
               onClick={() => {
-                setWhich("bass");
+                chooseInstrument("bass");
                 setBassSource("auto");
               }}
               title="Build a bass tab from the detected chords (works for any song)"
@@ -680,7 +745,7 @@ export function TabsPanel({ title }: { title: string }) {
           <button
             type="button"
             onClick={() => {
-              setWhich("bass");
+              chooseInstrument("bass");
               setBassSource("rated");
             }}
             title="Find the highest-rated community bass tab (Ultimate Guitar) for this song"
@@ -729,7 +794,7 @@ export function TabsPanel({ title }: { title: string }) {
             adjustStart(alignedStartSec ?? beat.startSec);
             // Fold the precise notated tab tempo to the freshly-detected felt octave
             // (or use the detection directly when there's no notated tempo).
-            setBpm(
+            setAutoBpm(
               feltTempo(
                 baseTempo || Math.round(beat.bpm),
                 analysis?.segments,
@@ -751,13 +816,13 @@ export function TabsPanel({ title }: { title: string }) {
         );
         if (fit && fit.bpm > 30 && fit.bpm < 320) {
           adjustStart(fit.startSec);
-          setBpm(feltTempo(Math.round(fit.bpm), analysis?.segments, onsets, analysis?.bpm));
+          setAutoBpm(feltTempo(Math.round(fit.bpm), analysis?.segments, onsets, analysis?.bpm));
           return;
         }
       }
       // 3. Fall back to first chord + Songsterr BPM (octave-corrected).
       adjustStart(firstChordSec);
-      setBpm(feltTempo(baseTempo, analysis?.segments, onsets, analysis?.bpm));
+      setAutoBpm(feltTempo(baseTempo, analysis?.segments, onsets, analysis?.bpm));
     } finally {
       setGuessing(false);
     }
@@ -769,7 +834,7 @@ export function TabsPanel({ title }: { title: string }) {
     const target = alignedStartSec ?? firstChordSec;
     if (syncKey) autoSeedRef.current = { key: syncKey, value: target };
     adjustStart(target);
-    setBpm(feltTempo(baseTempo, analysis?.segments, onsets, analysis?.bpm));
+    setAutoBpm(feltTempo(baseTempo, analysis?.segments, onsets, analysis?.bpm));
     setDrift(true);
     savePins({});
     setPinMode(false);
@@ -1138,7 +1203,7 @@ export function TabsPanel({ title }: { title: string }) {
                     <button
                       key={t}
                       type="button"
-                      onClick={() => setWhich(t)}
+                      onClick={() => chooseInstrument(t)}
                       className={`h-full whitespace-nowrap rounded-full px-3 text-xs font-semibold capitalize leading-none transition-colors ${
                         which === t ? "chord-gradient text-[#06351f] shadow-sm" : "text-muted hover:text-foreground"
                       }`}

@@ -254,6 +254,33 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
   // Mix/sync sliders are secondary: collapsed by default so Record is the
   // obvious primary action (they used to overflow the panel and hide it).
   const [mixOpen, setMixOpen] = useState(false);
+  // The finished take, held until it is safely on disk. A cancelled save dialog
+  // or a failed write (e.g. a folder outside the fs scope) used to drop the whole
+  // recording on the floor — now it stays retryable via the Save button.
+  const pendingRef = useRef<{ blob: Blob; name: string; mime: string } | null>(null);
+  const [pending, setPending] = useState(false);
+
+  const saveTake = useCallback(async () => {
+    const take = pendingRef.current;
+    if (!take) return;
+    setSaving(true);
+    try {
+      const ok = await saveRecording(
+        new Uint8Array(await take.blob.arrayBuffer()),
+        take.name,
+        take.mime,
+      );
+      if (ok) {
+        pendingRef.current = null;
+        setPending(false);
+        setSaved(true);
+      }
+    } catch (e) {
+      setError(`Couldn't save: ${String(e)}`);
+    } finally {
+      setSaving(false);
+    }
+  }, []);
 
   // Acquire the camera + start the composite draw loop on mount; tear down on unmount.
   useEffect(() => {
@@ -374,6 +401,8 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
     setSaved(false);
     setError(null);
     setElapsed(0);
+    pendingRef.current = null; // a new take supersedes an unsaved one
+    setPending(false);
     try {
       const { ctx, songSrc } = songGraph(engine.audioEl as HTMLMediaElement);
       await ctx.resume(); // a context made outside a gesture starts suspended
@@ -439,19 +468,9 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
         const blob = new Blob(chunksRef.current, { type: outMime });
         chunksRef.current = [];
         const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-        setSaving(true);
-        try {
-          const ok = await saveRecording(
-            new Uint8Array(await blob.arrayBuffer()),
-            `chordMatik-${stamp}.${ext}`,
-            outMime,
-          );
-          if (ok) setSaved(true);
-        } catch (e) {
-          setError(`Couldn't save: ${String(e)}`);
-        } finally {
-          setSaving(false);
-        }
+        pendingRef.current = { blob, name: `chordMatik-${stamp}.${ext}`, mime: outMime };
+        setPending(true);
+        await saveTake();
       };
       rec.start(1000); // 1s timeslice → periodic flush, more robust than one giant blob
       recRef.current = rec;
@@ -459,7 +478,7 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
     } catch (e) {
       setError(`Couldn't start recording: ${String(e)}`);
     }
-  }, [engine, micVol, songVol, syncMs]);
+  }, [engine, micVol, songVol, syncMs, saveTake]);
 
   const stopRecording = useCallback(() => {
     const r = recRef.current;
@@ -499,15 +518,17 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
   // that Record (or Space) was how you start.
   const statusText = saving
     ? "Choose where to save…"
-    : saved
-      ? "Saved ✓"
-      : recording
-        ? engine.isPlaying
-          ? "Recording…"
-          : "Paused — press play"
-        : ready
-          ? "Hit Record (or press Space)"
-          : "Starting camera…";
+    : recording
+      ? engine.isPlaying
+        ? "Recording…"
+        : "Paused — press play"
+      : pending
+        ? "Take not saved yet"
+        : saved
+          ? "Saved ✓"
+          : ready
+            ? "Hit Record (or press Space)"
+            : "Starting camera…";
 
   return (
     <div className="fixed bottom-4 right-4 z-[90] w-80 select-none">
@@ -575,6 +596,17 @@ export function CameraStudio({ engine, segments, transpose, onClose }: CameraStu
           >
             <GaugeIcon className="size-4" />
           </button>
+
+          {pending && !recording && !saving && (
+            <button
+              type="button"
+              onClick={() => void saveTake()}
+              title="Save the last take (it isn't on disk yet)"
+              className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-accent/60 bg-accent/15 px-2.5 py-1.5 text-xs font-semibold text-accent transition-colors hover:bg-accent/25"
+            >
+              💾 Save
+            </button>
+          )}
 
           {recording ? (
             <button

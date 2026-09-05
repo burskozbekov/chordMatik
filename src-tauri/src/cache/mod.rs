@@ -163,6 +163,12 @@ pub fn list(app: &tauri::AppHandle) -> Vec<LibraryItem> {
                 if entry.ephemeral {
                     continue; // downloaded/captured — cached, but not a library song
                 }
+                // A song whose file was moved/deleted can't be opened — listing it
+                // only offers a click that ends in an error. Keep the cache entry
+                // (the file may come back, e.g. an external drive) but hide the row.
+                if !Path::new(&entry.path).exists() {
+                    continue;
+                }
                 items.push(LibraryItem {
                     hash,
                     path: entry.path,

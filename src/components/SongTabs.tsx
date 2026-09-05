@@ -44,17 +44,26 @@ export function SongTabs() {
   const [confirmClear, setConfirmClear] = useState(false);
   const vidRef = useRef<string | null>(null);
   vidRef.current = songVideoId;
+  const lastPathRef = useRef<string | null>(null);
 
-  // Upsert the active song into the tab list (move-to-end if already present).
+  // Upsert the active song into the tab list: a newly-opened song moves to the
+  // end; a RENAME of the current song (same path, new name) updates its label in
+  // place — the strip used to keep showing the old title until the next switch.
   useEffect(() => {
     if (!song) return;
+    const switched = lastPathRef.current !== song.path;
+    lastPathRef.current = song.path;
     setTabs((prev) => {
-      const next = prev.filter((t) => t.path !== song.path);
-      next.push({ path: song.path, name: song.name, videoId: vidRef.current ?? undefined });
+      const entry = { path: song.path, name: song.name, videoId: vidRef.current ?? undefined };
+      const idx = prev.findIndex((t) => t.path === song.path);
+      const next =
+        idx >= 0 && !switched
+          ? prev.map((t, i) => (i === idx ? { ...t, ...entry } : t))
+          : [...prev.filter((t) => t.path !== song.path), entry];
       persist(TABS_KEY, next);
       return next;
     });
-  }, [song?.path]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [song?.path, song?.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Restores instantly from the in-session memory cache if already loaded;
   // otherwise loads it (YouTube via id, local via path) — see AppState.openTab.

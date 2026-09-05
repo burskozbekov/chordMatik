@@ -11,7 +11,7 @@
     "process:allow-restart",
     {
       "identifier": "fs:allow-write-file",
-      "allow": [{ "path": "$HOME/**" }]
+      "allow": [{ "path": "$HOME/**" }, { "path": "/Volumes/**" }]
     },
     {
       "identifier": "fs:allow-read-file",

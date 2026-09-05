@@ -285,12 +285,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   );
 
   const runAnalysis = useCallback(
-    async (path: string, token: number, ephemeral = false) => {
+    async (path: string, token: number, ephemeral = false, force = false) => {
       setAnalysis(null);
       setAnalysisError(null);
       setAnalysisStatus("analyzing");
       try {
-        const result = await analyzeChords(path, ephemeral);
+        const result = await analyzeChords(path, ephemeral, force);
         if (token !== loadTokenRef.current) return;
         setAnalysis(result);
         setAnalysisStatus("done");
@@ -410,7 +410,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       } catch (e) {
         if (token !== loadTokenRef.current) return;
         setStatus("error");
-        const msg = typeof e === "string" ? e : `Could not analyze this file. ${String(e)}`;
+        const raw = typeof e === "string" ? e : String(e);
+        // A tab/library entry whose file was moved or deleted is the common case —
+        // say that plainly instead of surfacing the raw OS error.
+        const msg = /No such file|os error 2\b/i.test(raw)
+          ? `This file can't be found — it may have been moved or deleted: ${fileName(path)}`
+          : typeof e === "string"
+            ? e
+            : `Could not analyze this file. ${raw}`;
         setError(msg);
         // If this load was a YouTube fetch, surface it on the fetch UI too so the
         // loader doesn't hang (the effect's catch never fires — we threw here).
@@ -532,8 +539,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const reanalyze = useCallback(() => {
     // Bump the token so a concurrent in-flight load can't clobber this result,
     // and preserve `ephemeral` so re-analyzing a YouTube/captured song never
-    // gets persisted into the local library.
-    if (song) void runAnalysis(song.path, ++loadTokenRef.current, song.ephemeral);
+    // gets persisted into the local library. `force` bypasses the disk cache —
+    // without it "Re-analyze" just handed back the same cached chords.
+    if (song) void runAnalysis(song.path, ++loadTokenRef.current, song.ephemeral, true);
   }, [song, runAnalysis]);
 
   // Dev/demo bootstrap: `?demo` outside Tauri loads a bundled clip + mock chords.

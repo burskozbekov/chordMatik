@@ -180,7 +180,10 @@ export function Metronome({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const shownBpm = sync && songBpm > 0 ? Math.round(songBpm) : bpm;
+  // `bpm` already mirrors the song when synced (the median of the TRACKED beats
+  // when we have them, else the tab tempo) — showing songBpm here displayed a
+  // stale notated value while the clicks followed the real beats.
+  const shownBpm = bpm;
 
   return (
     <section className="glass flex flex-col gap-4 rounded-2xl px-4 py-4 shadow-overlay">

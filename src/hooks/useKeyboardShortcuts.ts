@@ -16,6 +16,7 @@ export function useKeyboardShortcuts(engine: AudioEngine, enabled: boolean) {
         target &&
         (target.tagName === "INPUT" ||
           target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" || // Space/arrows operate the dropdown itself
           target.isContentEditable)
       ) {
         return;
