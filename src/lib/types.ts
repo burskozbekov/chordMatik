@@ -47,10 +47,16 @@ export interface SongsterrMeasure {
 }
 export interface SongsterrBeat {
   notes?: { string: number; fret: number; ghost?: boolean; tie?: boolean; dead?: boolean }[];
+  /** REAL length as a whole-note fraction, dots + tuplet baked in ([1,6] = quarter triplet). */
   duration?: [number, number]; // [numerator, denominator]
   dots?: number;
   rest?: boolean;
+  /** NOTATED value denominator (4 = quarter, 16 = sixteenth). */
   type?: number;
+  /** Tuplet group size (3 = triplet); tupletStart/tupletStop mark the group edges. */
+  tuplet?: number;
+  tupletStart?: boolean;
+  tupletStop?: boolean;
   chord?: { text?: string };
 }
 

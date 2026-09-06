@@ -21,7 +21,7 @@ export interface TabSynth {
 const dotMult = (d: number) => 1 + (d >= 1 ? 0.5 : 0) + (d >= 2 ? 0.25 : 0);
 
 /** Beat length in whole notes. */
-function durWhole(beat: SongsterrBeat): number {
+export function durWhole(beat: SongsterrBeat): number {
   const d = beat.duration;
   if (Array.isArray(d) && d.length >= 2 && d[0] > 0 && d[1] > 0) return d[0] / d[1];
   return 0.25 * dotMult(beat.dots ?? 0);

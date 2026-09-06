@@ -107,6 +107,110 @@ export function beatSyncPoints(
 }
 
 /**
+ * Fuse STRUCTURE (chord-DTW bar anchors: which bar starts roughly where, incl.
+ * skipped sections) with TIMING (the recording's tracked beats). Each anchor is
+ * snapped to the nearest beat; between two anchors the bars are laid out by
+ * BEAT COUNT, so a tempo change under a held chord (invisible to chroma) still
+ * moves the cursor on the beat. A span whose beat count doesn't fit its bar
+ * count (a stretched/extra section, or beats the tracker lost) keeps only its
+ * end anchors and AlphaTab interpolates — never a wrong dense grid. A tracker
+ * running at double or half the notated pulse is recognised per span.
+ */
+export function beatQuantizeAnchors(
+  points: SyncAnchor[],
+  beats: number[],
+  beatsPerBar: number,
+  nBars: number,
+): SyncAnchor[] {
+  if (points.length === 0 || beats.length < 4 || !(beatsPerBar >= 1)) return points;
+  const ibis: number[] = [];
+  for (let i = 1; i < beats.length; i++) ibis.push(beats[i] - beats[i - 1]);
+  ibis.sort((a, b) => a - b);
+  const medIbi = ibis[ibis.length >> 1];
+  if (!(medIbi > 0)) return points;
+  const tol = 0.35 * medIbi;
+  const nearest = (sec: number): number => {
+    let lo = 0;
+    let hi = beats.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (beats[mid] < sec) lo = mid + 1;
+      else hi = mid;
+    }
+    let k = lo;
+    if (k > 0 && Math.abs(beats[k - 1] - sec) < Math.abs(beats[k] - sec)) k = k - 1;
+    return Math.abs(beats[k] - sec) <= tol ? k : -1;
+  };
+  // Beats per bar for a span, if its count fits the notated meter at the
+  // tracker's pulse (1×, 2× or ½×) within 12 %; else null (structural stretch).
+  const stepFor = (nBeats: number, nSpanBars: number): number | null => {
+    const c = nBeats / nSpanBars;
+    for (const mult of [1, 2, 0.5]) {
+      if (Math.abs(c / (beatsPerBar * mult) - 1) <= 0.12) return c;
+    }
+    return null;
+  };
+
+  const knots = points.map((p) => {
+    const sec = p.millisecondOffset / 1000;
+    const k = nearest(sec);
+    return { bar: p.barIndex, beat: k, sec: k >= 0 ? beats[k] : sec };
+  });
+  const out: SyncAnchor[] = [];
+  const push = (bar: number, sec: number) =>
+    out.push({ barIndex: bar, barPosition: 0, barOccurence: 0, millisecondOffset: Math.max(0, sec * 1000) });
+
+  let usedStep: number | null = null; // last accepted beats-per-bar (for extrapolation)
+  for (let a = 0; a < knots.length; a++) {
+    const ka = knots[a];
+    const kb = knots[a + 1];
+    if (kb && ka.beat >= 0 && kb.beat >= 0 && kb.bar > ka.bar) {
+      const step = stepFor(kb.beat - ka.beat, kb.bar - ka.bar);
+      if (step) {
+        usedStep = step;
+        for (let b = ka.bar; b < kb.bar; b++) {
+          const idx = Math.round(ka.beat + (b - ka.bar) * step);
+          if (idx < beats.length) push(b, beats[idx]);
+        }
+        continue;
+      }
+    }
+    push(ka.bar, ka.sec); // endpoints only for this span (interpolated by AlphaTab)
+  }
+
+  // Extrapolate by beat count beyond the first/last anchor (leading rest bars,
+  // an outro the chords never reached) at the tracker's pulse.
+  const step = usedStep ?? beatsPerBar;
+  const first = knots[0];
+  if (first.beat >= 0 && first.bar > 0) {
+    const lead: SyncAnchor[] = [];
+    for (let b = first.bar - 1; b >= 0; b--) {
+      const idx = Math.round(first.beat - (first.bar - b) * step);
+      if (idx < 0) break;
+      lead.unshift({ barIndex: b, barPosition: 0, barOccurence: 0, millisecondOffset: Math.max(0, beats[idx] * 1000) });
+    }
+    out.unshift(...lead);
+  }
+  const lastK = knots[knots.length - 1];
+  if (lastK.beat >= 0) {
+    for (let b = lastK.bar + 1; b < nBars; b++) {
+      const idx = Math.round(lastK.beat + (b - lastK.bar) * step);
+      if (idx >= beats.length) break;
+      push(b, beats[idx]);
+    }
+  }
+
+  // Strictly increasing in both bar and time (AlphaTab requirement).
+  const clean: SyncAnchor[] = [];
+  for (const p of out) {
+    const prev = clean[clean.length - 1];
+    if (prev && (p.barIndex <= prev.barIndex || p.millisecondOffset <= prev.millisecondOffset)) continue;
+    clean.push(p);
+  }
+  return clean;
+}
+
+/**
  * Overlay the user's ⚓ PINNED bars onto an automatic anchor set. A pin is
  * authoritative: it replaces the auto anchor for its bar, and any auto anchor
  * that would break monotonicity around a pin (earlier bar at a later time, etc.)
@@ -299,15 +403,44 @@ export function dtw(
  * pickup, or an early misdetection would otherwise drag to bar 0).
  * Sizes here are tiny (segments × bars ≈ 10⁴ cells), so no band is needed.
  */
-export function subseqDtw(
-  A: number[][],
-  B: number[][],
-): { path: Array<[number, number]>; avgCost: number } {
+/** Gap penalties for structural skips: `open` once per run + `extend` per unit. */
+export interface SkipPenalty {
+  open: number;
+  extend: number;
+  max: number;
+}
+export interface SubseqOptions {
+  /** Skip runs of AUDIO segments — the recording repeats/adds material the tab lacks. */
+  audioSkip?: SkipPenalty | null;
+  /** Skip runs of TAB bars — the tab has material the recording cut (edit, fade). */
+  tabSkip?: SkipPenalty | null;
+}
+/** Cheaper than absorbing ≥3 mismatching units (each ~0.6–1.0 cosine distance),
+ *  dearer than a single misdetected chord (absorbed as before). */
+export const DEFAULT_SKIPS: Required<SubseqOptions> = {
+  audioSkip: { open: 0.5, extend: 0.35, max: 64 },
+  tabSkip: { open: 0.5, extend: 0.35, max: 48 },
+};
+
+export interface SubseqResult {
+  path: Array<[number, number]>;
+  /** Mean per-unit cost INCLUDING skip penalties (so a heavily-skipped alignment
+   *  can't masquerade as a confident one). */
+  avgCost: number;
+  /** Audio segments the alignment jumped over (recording-only material). */
+  skippedAudio: number;
+  /** Tab bars the alignment jumped over (tab-only material). */
+  skippedBars: number;
+}
+
+export function subseqDtw(A: number[][], B: number[][], opts: SubseqOptions = DEFAULT_SKIPS): SubseqResult {
   const n = A.length; // audio chord segments (the "text")
-  const m = B.length; // tab bars (the "pattern" — consumed fully)
+  const m = B.length; // tab bars (the "pattern" — consumed, bar skips excepted)
   const INF = Infinity;
-  if (n === 0 || m === 0) return { path: [], avgCost: 1 };
+  if (n === 0 || m === 0) return { path: [], avgCost: 1, skippedAudio: 0, skippedBars: 0 };
   const dist = (i: number, j: number) => cosDist(A[i], B[j]);
+  const aSkip = opts.audioSkip ?? null;
+  const tSkip = opts.tabSkip ?? null;
   // Micro-penalty on non-diagonal steps: among otherwise-TIED paths (e.g. a run
   // of identical bars over identical segments, where every cell costs exactly 0)
   // it makes the diagonal strictly cheapest, so bars can't silently pile up on
@@ -322,50 +455,124 @@ export function subseqDtw(
   // bias (max ~1e-4 across the whole track) is far below any real chroma distance,
   // so it only breaks exact ties.
   const START_BIAS = 1e-4;
-  // D[j][i]: cost of aligning tab bars 0..j ending at audio segment i.
-  const D: Float64Array[] = Array.from({ length: m }, () => new Float64Array(n).fill(INF));
-  for (let i = 0; i < n; i++) D[0][i] = dist(i, 0) + (i / Math.max(1, n)) * START_BIAS; // free start, earliest wins ties
+  const startBias = (i: number) => (i / Math.max(1, n)) * START_BIAS;
+
+  // D[j*n+i]: cost of aligning tab bars 0..j ending at audio segment i.
+  // Back-pointers: 0 start · 1 up · 2 left · 3 diag · 4+k skip k audio segments
+  // (from (j-1, i-1-k)) · 1000+k skip k tab bars (from (j-1-k, i-1)) ·
+  // 2000+j skipped the tab's first j bars (free start at bar j).
+  const D = new Float64Array(m * n).fill(INF);
+  const bp = new Int32Array(m * n);
+  for (let i = 0; i < n; i++) D[i] = dist(i, 0) + startBias(i); // free start, earliest wins ties
   for (let j = 1; j < m; j++) {
+    const row = j * n;
+    const prev = (j - 1) * n;
     for (let i = 0; i < n; i++) {
-      const up = D[j - 1][i] + STEP_PEN;
-      const left = i > 0 ? D[j][i - 1] + STEP_PEN : INF;
-      const diag = i > 0 ? D[j - 1][i - 1] : INF;
-      const best = Math.min(up, left, diag);
-      if (best < INF) D[j][i] = dist(i, j) + best;
+      const c = dist(i, j);
+      let best = D[prev + i] + STEP_PEN; // up
+      let move = 1;
+      if (i > 0) {
+        const left = D[row + i - 1] + STEP_PEN;
+        if (left < best) {
+          best = left;
+          move = 2;
+        }
+        const diag = D[prev + i - 1];
+        if (diag <= best) {
+          best = diag;
+          move = 3;
+        }
+        if (aSkip) {
+          // Bar j-1 ended at segment i-1-k; segments i-k..i-1 are unmatched.
+          const kmax = Math.min(aSkip.max, i - 1);
+          for (let k = 1; k <= kmax; k++) {
+            const v = D[prev + i - 1 - k] + aSkip.open + k * aSkip.extend;
+            if (v < best) {
+              best = v;
+              move = 4 + k;
+            }
+          }
+        }
+        if (tSkip) {
+          // Bars j-k..j-1 are unmatched; bar j-1-k ended at segment i-1.
+          const kmax = Math.min(tSkip.max, j - 1);
+          for (let k = 1; k <= kmax; k++) {
+            const v = D[(j - 1 - k) * n + i - 1] + tSkip.open + k * tSkip.extend;
+            if (v < best) {
+              best = v;
+              move = 1000 + k;
+            }
+          }
+        }
+      }
+      if (tSkip && j <= tSkip.max) {
+        // The tab opens with bars the recording doesn't have: start at bar j.
+        const v = startBias(i) + tSkip.open + j * tSkip.extend;
+        if (v < best) {
+          best = v;
+          move = 2000 + j;
+        }
+      }
+      if (best < INF) {
+        D[row + i] = c + best;
+        bp[row + i] = move;
+      }
     }
   }
 
   // Free end: best last-row cell.
+  const last = (m - 1) * n;
   let end = 0;
-  for (let i = 1; i < n; i++) if (D[m - 1][i] < D[m - 1][end]) end = i;
-  if (!Number.isFinite(D[m - 1][end])) return { path: [], avgCost: 1 };
+  for (let i = 1; i < n; i++) if (D[last + i] < D[last + end]) end = i;
+  if (!Number.isFinite(D[last + end])) return { path: [], avgCost: 1, skippedAudio: 0, skippedBars: 0 };
 
-  // Backtrack to row 0; wherever we land is the alignment's audio start.
+  // Backtrack to row 0 (or a start-skip); wherever we land is the audio start.
   const path: Array<[number, number]> = [];
   let j = m - 1;
   let i = end;
   let total = 0;
-  let steps = 0;
+  let units = 0;
+  let skippedAudio = 0;
+  let skippedBars = 0;
   for (;;) {
     path.push([i, j]);
     total += dist(i, j);
-    steps++;
+    units++;
     if (j === 0) break;
-    const up = D[j - 1][i] + STEP_PEN;
-    const left = i > 0 ? D[j][i - 1] + STEP_PEN : INF;
-    const diag = i > 0 ? D[j - 1][i - 1] : INF;
-    const mn = Math.min(up, left, diag);
-    if (mn === diag) {
+    const move = bp[j * n + i];
+    if (move === 3) {
       i--;
       j--;
-    } else if (mn === up) {
+    } else if (move === 1) {
+      j--;
+    } else if (move === 2) {
+      i--;
+    } else if (move >= 2000) {
+      const k = move - 2000;
+      skippedBars += k;
+      total += (tSkip?.open ?? 0) + k * (tSkip?.extend ?? 0);
+      units += k;
+      break;
+    } else if (move >= 1000) {
+      const k = move - 1000;
+      skippedBars += k;
+      total += (tSkip?.open ?? 0) + k * (tSkip?.extend ?? 0);
+      units += k;
+      j -= 1 + k;
+      i--;
+    } else if (move >= 4) {
+      const k = move - 4;
+      skippedAudio += k;
+      total += (aSkip?.open ?? 0) + k * (aSkip?.extend ?? 0);
+      units += k;
+      i -= 1 + k;
       j--;
     } else {
-      i--;
+      break; // start marker
     }
   }
   path.reverse();
-  return { path, avgCost: steps ? total / steps : 1 };
+  return { path, avgCost: units ? total / units : 1, skippedAudio, skippedBars };
 }
 
 /**

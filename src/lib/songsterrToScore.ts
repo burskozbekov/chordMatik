@@ -25,65 +25,33 @@
 
 import * as alphaTab from "@coderline/alphatab";
 import type { SongsterrTrack, SongsterrBeat } from "./types";
+import { notatedDuration } from "./tabDuration";
 
-/** alphaTab Duration enum values are the literal note denominators. */
-const BASE_DURATIONS: alphaTab.model.Duration[] = [
-  alphaTab.model.Duration.Whole, // 1
-  alphaTab.model.Duration.Half, // 2
-  alphaTab.model.Duration.Quarter, // 4
-  alphaTab.model.Duration.Eighth, // 8
-  alphaTab.model.Duration.Sixteenth, // 16
-  alphaTab.model.Duration.ThirtySecond, // 32
-  alphaTab.model.Duration.SixtyFourth, // 64
-];
-
-interface DurationResult {
-  duration: alphaTab.model.Duration;
-  dots: number;
-}
+/** Notated denominator → alphaTab Duration (the enum values ARE the denominators). */
+const DURATION_BY_DENOMINATOR: Record<number, alphaTab.model.Duration> = {
+  1: alphaTab.model.Duration.Whole,
+  2: alphaTab.model.Duration.Half,
+  4: alphaTab.model.Duration.Quarter,
+  8: alphaTab.model.Duration.Eighth,
+  16: alphaTab.model.Duration.Sixteenth,
+  32: alphaTab.model.Duration.ThirtySecond,
+  64: alphaTab.model.Duration.SixtyFourth,
+};
 
 /**
- * Map a Songsterr [numerator, denominator] fraction to the closest alphaTab
- * Duration + dot count. Mirrors the reference duration-mapper: test every base
- * duration with 0/1/2 dots and pick the closest fractional value.
+ * Apply a Songsterr beat's timing to an alphaTab beat: notated value, dots and
+ * tuplet (n:m). Songsterr's `duration` is the REAL fraction with the tuplet
+ * baked in — the old mapper rounded a quarter triplet (1/6) to a dotted eighth,
+ * so every triplet bar overflowed and the cursor drifted off the notes.
  */
-function mapDuration(
-  duration: [number, number] | undefined,
-  explicitDots?: number,
-): DurationResult {
-  if (!Array.isArray(duration) || duration.length < 2) {
-    return { duration: alphaTab.model.Duration.Quarter, dots: explicitDots ?? 0 };
+function applyDuration(beat: alphaTab.model.Beat, beatData: SongsterrBeat) {
+  const nd = notatedDuration(beatData.duration, beatData.dots, beatData.tuplet, beatData.type);
+  beat.duration = DURATION_BY_DENOMINATOR[nd.denominator] ?? alphaTab.model.Duration.Quarter;
+  beat.dots = nd.dots;
+  if (nd.tupletNumerator > 1) {
+    beat.tupletNumerator = nd.tupletNumerator;
+    beat.tupletDenominator = nd.tupletDenominator;
   }
-  const [numerator, denominator] = duration;
-  if (!numerator || !denominator || numerator < 0 || denominator < 0) {
-    return { duration: alphaTab.model.Duration.Quarter, dots: explicitDots ?? 0 };
-  }
-
-  const target = numerator / denominator;
-  let bestDuration = alphaTab.model.Duration.Quarter;
-  let bestDots = 0;
-  let bestDelta = Number.POSITIVE_INFINITY;
-
-  for (const candidate of BASE_DURATIONS) {
-    const baseValue = 1 / Number(candidate);
-    for (const dots of [0, 1, 2]) {
-      const dotted =
-        baseValue + (dots >= 1 ? baseValue / 2 : 0) + (dots >= 2 ? baseValue / 4 : 0);
-      const delta = Math.abs(dotted - target);
-      if (delta < bestDelta) {
-        bestDelta = delta;
-        bestDuration = candidate;
-        bestDots = dots;
-      }
-    }
-  }
-
-  // Songsterr's explicit `dots` field is authoritative when present and the
-  // fraction already implied the same base duration (num 3 => 1 dot, 7 => 2).
-  return {
-    duration: bestDuration,
-    dots: typeof explicitDots === "number" ? explicitDots : bestDots,
-  };
 }
 
 /** A whole rest, used for empty/missing voices. */
@@ -102,10 +70,7 @@ function mapBeat(
   drumIndex: Map<number, number> | null,
 ): alphaTab.model.Beat {
   const beat = new alphaTab.model.Beat();
-
-  const { duration, dots } = mapDuration(beatData.duration, beatData.dots);
-  beat.duration = duration;
-  beat.dots = dots;
+  applyDuration(beat, beatData);
 
   // Carry the chord symbol text (e.g. "F5") onto the beat as display text.
   const chordText = beatData.chord?.text;

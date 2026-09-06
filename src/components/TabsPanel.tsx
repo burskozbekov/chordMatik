@@ -2,11 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { detectBeat, fetchTabs, fetchTabTrack, openTabFile, trackBeats } from "../lib/tauri";
 import { useAiBass as useAiBassTranscription } from "../hooks/useAiBass";
 import { feltTempo, savedBpmIsAuto } from "../lib/feltTempo";
+import { signedShift, transposeTrack } from "../lib/transposeTrack";
+import { barAgreement } from "../lib/barAgreement";
+import { fixBassWithAudio } from "../lib/fixBassWithAudio";
 import { bassFromChords, bassFromTranscription } from "../lib/bassFromChords";
 import { tabAgreement } from "../lib/tabMatch";
 import { useAppState } from "../state/AppState";
 import {
   applyPins,
+  beatQuantizeAnchors,
   beatSyncPoints,
   computeSyncPoints,
   fitTwoAnchors,
@@ -277,7 +281,7 @@ export function TabsPanel({ title }: { title: string }) {
   }, [song?.path]);
 
   // AI bass transcription (basic-pitch + optional Demucs HQ) — see useAiBass.
-  const { aiNotes, aiState, hqReady, hqProgress, runAiBass, enableHq } = useAiBassTranscription(
+  const { aiNotes, aiState, hqReady, hqProgress, runAiBass, enableHq, ensureNotes } = useAiBassTranscription(
     song?.path,
     () => {
       chooseInstrument("bass");
@@ -317,6 +321,44 @@ export function TabsPanel({ title }: { title: string }) {
     if (useGenBass) return autoBass;
     return result ? (result[which] ?? null) : null;
   }, [useAiBass, aiTrack, useGenBass, autoBass, result, which]);
+  // Semitone offset audio − tab from the audio cross-validation (0 = same key).
+  // Only meaningful for a real Songsterr track — generated/AI bass are built
+  // from the audio itself.
+  const keyShift = match && !useGenBass && !useAiBass ? signedShift(match.shift) : 0;
+  // The track in the RECORDING's key: what the alignment compares against the
+  // audio chroma (a pitch-shifted upload or an Eb-tuned record used to defeat
+  // the chord warp outright), and what the tab shows when transposition is on.
+  const alignTrack = useMemo(
+    () => (activeTrack && keyShift ? transposeTrack(activeTrack, keyShift) : activeTrack),
+    [activeTrack, keyShift],
+  );
+  // "Transpose to the recording" toggle, persisted per (song, tab).
+  const transposeKey =
+    result?.songId && song?.path ? `tabtranspose:${song.path}:${result.songId}` : null;
+  const [transposeOn, setTransposeOn] = useState(false);
+  useEffect(() => {
+    if (!transposeKey) {
+      setTransposeOn(false);
+      return;
+    }
+    try {
+      setTransposeOn(localStorage.getItem(transposeKey) === "1");
+    } catch {
+      setTransposeOn(false);
+    }
+  }, [transposeKey]);
+  const toggleTranspose = () => {
+    const next = !transposeOn;
+    setTransposeOn(next);
+    if (!transposeKey) return;
+    try {
+      if (next) localStorage.setItem(transposeKey, "1");
+      else localStorage.removeItem(transposeKey);
+    } catch {
+      /* ignore */
+    }
+  };
+  const displayTrack = transposeOn && keyShift ? alignTrack : activeTrack;
   // Keep `which` on an instrument that actually has a track (e.g. after a
   // cross-validation swap to a candidate that lacks the current instrument).
   // Bass is exempt: it's always offer-able (rated/AI/generated), so we must NOT
@@ -460,9 +502,9 @@ export function TabsPanel({ title }: { title: string }) {
 
   // Chord-DTW anchors — used for "Auto-guess" + as the warp base in Drifts mode.
   const syncResult = useMemo(() => {
-    if (!activeTrack || !analysis?.segments?.length) return null;
-    return computeSyncPoints(analysis.segments, activeTrack);
-  }, [activeTrack, analysis]);
+    if (!alignTrack || !analysis?.segments?.length) return null;
+    return computeSyncPoints(analysis.segments, alignTrack);
+  }, [alignTrack, analysis]);
 
   // Where the tab's bar 1 REALLY begins in the recording, from the open-begin
   // chord alignment (which skips intros the tab doesn't notate). Null when the
@@ -504,18 +546,18 @@ export function TabsPanel({ title }: { title: string }) {
       !syncResult ||
       syncResult.points.length < 2 ||
       syncResult.confidence < WARP_MIN_CONFIDENCE ||
-      !activeTrack ||
+      !alignTrack ||
       !song?.path
     )
       return;
     let cancelled = false;
-    refineSyncPoints(syncResult, activeTrack, song.path).then((r) => {
+    refineSyncPoints(syncResult, alignTrack, song.path).then((r) => {
       if (!cancelled && r !== syncResult) setRefined(r);
     });
     return () => {
       cancelled = true;
     };
-  }, [drift, useGenBass, useAiBass, syncResult, activeTrack, song?.path]);
+  }, [drift, useGenBass, useAiBass, syncResult, alignTrack, song?.path]);
 
   // Share the song's BPM (Songsterr tab tempo, user-calibrated) app-wide so the
   // metronome + count-in match it. The notated tab BPM is the most accurate source.
@@ -574,15 +616,28 @@ export function TabsPanel({ title }: { title: string }) {
   const beatCovers = !!beatSync && beatSync.points.length >= Math.max(2, tabBars * 0.85);
   // Chord-DTW warp still owns generated/AI bass exclusion + confidence gating.
   const chordWarp = drift && !useGenBass && !useAiBass ? refined ?? warpBase : null;
-  // Priority: dense real-beat grid → chord-DTW warp (structural) → sparse beats →
+  // STRUCTURE from the chord warp (which bar starts where, sections the
+  // recording repeats or cuts) + TIMING from the tracked beats (bars between
+  // anchors laid out by beat count, tempo drift under held chords included).
+  // The pure beat grid below counts beats from bar 1 and silently derails on
+  // any structural difference; the chord warp alone goes flat under a
+  // sustained chord — fused, each covers the other's blind spot.
+  const fused = useMemo(() => {
+    if (!chordWarp || songBeats.length <= 4) return null;
+    const pts = beatQuantizeAnchors(chordWarp.points, songBeats, meterBeats, tabBars);
+    return pts.length >= 2 ? pts : null;
+  }, [chordWarp, songBeats, meterBeats, tabBars]);
+  // Priority: fused grid → dense real-beat grid → chord-DTW warp → sparse beats →
   // constant-tempo map.
   const autoSyncPoints =
+    fused ??
     (
       (beatCovers ? beatSync : null) ??
       chordWarp ??
       (beatSync && beatSync.points.length >= 2 ? beatSync : null) ??
       manual
-    )?.points ?? null;
+    )?.points ??
+    null;
   // ⚓ user-pinned bars (bar → ms), persisted per syncKey — authoritative overrides
   // for stubborn spots where the automatic sync is off.
   const [pins, setPins] = useState<Record<number, number>>({});
@@ -612,15 +667,77 @@ export function TabsPanel({ title }: { title: string }) {
   const pinBarAtPlayhead = (barIndex: number) => {
     savePins({ ...pins, [barIndex]: Math.round(engine.getTime() * 1000) });
   };
+  // A start the user set by hand (M, 📍, nudges, a manual save) is a pin on bar 0:
+  // the drift grids own bar 0 otherwise and would silently ignore it. An
+  // untouched auto seed stays with the alignment; generated/AI bass are built
+  // at startSec already.
+  const seedNow = autoSeedRef.current;
+  const startIsManual = !(seedNow?.key === syncKey && Math.abs(startSec - seedNow.value) < 0.0005);
+  const effectivePins = useMemo(() => {
+    if (!startIsManual || !drift || useGenBass || useAiBass || pins[0] !== undefined) return pins;
+    return { ...pins, 0: Math.round(startSec * 1000) };
+  }, [pins, startIsManual, startSec, drift, useGenBass, useAiBass]);
   const syncPoints = useMemo(
-    () => applyPins(autoSyncPoints, pins),
-    [autoSyncPoints, pins],
+    () => applyPins(autoSyncPoints, effectivePins),
+    [autoSyncPoints, effectivePins],
   );
   // Bar-start times (s) for the wave's anchor ticks — SEE where the sync lands.
   const anchorSecs = useMemo(
     () => (syncPoints ?? []).map((p) => p.millisecondOffset / 1000),
     [syncPoints],
   );
+
+  // 🔧 Fix with audio (Songsterr BASS only): notes that both the AI
+  // transcription and the chord analysis contradict are replaced. Persisted per
+  // (song, tab). Needs the tab in the recording's key (transposed, or no shift).
+  const fixKey = result?.songId && song?.path ? `tabfix:${song.path}:${result.songId}` : null;
+  const [fixOn, setFixOn] = useState(false);
+  useEffect(() => {
+    if (!fixKey) {
+      setFixOn(false);
+      return;
+    }
+    try {
+      setFixOn(localStorage.getItem(fixKey) === "1");
+    } catch {
+      setFixOn(false);
+    }
+  }, [fixKey]);
+  const fixAvailable =
+    which === "bass" && effBass === "songsterr" && !!result?.bass && (keyShift === 0 || transposeOn);
+  const ensureNotesRef = useRef(ensureNotes);
+  ensureNotesRef.current = ensureNotes;
+  // A remembered "fix on" needs the notes again after a song switch — transcribe
+  // quietly (230 KB model on first use, ~2 s per song) without changing the source.
+  useEffect(() => {
+    if (fixOn && fixAvailable && !aiNotes && aiState === "idle") void ensureNotesRef.current();
+  }, [fixOn, fixAvailable, aiNotes, aiState]);
+  const toggleFix = () => {
+    const next = !fixOn;
+    setFixOn(next);
+    if (fixKey) {
+      try {
+        if (next) localStorage.setItem(fixKey, "1");
+        else localStorage.removeItem(fixKey);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (next && !aiNotes) void ensureNotesRef.current();
+  };
+  const fixResult = useMemo(() => {
+    if (!fixOn || !fixAvailable || !displayTrack || !aiNotes?.length || !analysis?.segments?.length || !syncPoints)
+      return null;
+    return fixBassWithAudio(displayTrack, aiNotes, analysis.segments, syncPoints);
+  }, [fixOn, fixAvailable, displayTrack, aiNotes, analysis, syncPoints]);
+
+  // Audio-verified bars: per-bar agreement between the tab's notes and the
+  // chords the recording plays there (null = no verdict). Judged in the
+  // recording's key, on the fixed notes when the fix is on. Songsterr only.
+  const barScores = useMemo(() => {
+    if (!alignTrack || useGenBass || useAiBass || !analysis?.segments?.length || !syncPoints) return null;
+    return barAgreement(analysis.segments, fixResult?.track ?? alignTrack, syncPoints);
+  }, [alignTrack, useGenBass, useAiBass, analysis, syncPoints, fixResult]);
 
   // M = mark the start at the live playhead (tap while listening); R = jump to
   // the marked start (then Space plays from there). Bound once via refs.
@@ -766,7 +883,9 @@ export function TabsPanel({ title }: { title: string }) {
     );
   }
 
-  const track = activeTrack;
+  // What the tab VIEW renders: the tab as written, re-fretted into the
+  // recording's key when transposition is on, with the audio fixes when on.
+  const track = fixResult?.track ?? displayTrack;
   // Bass is always available — we can generate it from the chords for any song.
   // Bass is always offer-able (rated/AI/generated), even when Songsterr has none.
   const present = INSTRUMENTS.filter((k) => result?.[k] || k === "bass");
@@ -1102,6 +1221,25 @@ export function TabsPanel({ title }: { title: string }) {
               )}
             </span>
           )}
+          {!customTab && !useAiBass && !useGenBass && keyShift !== 0 && state === "done" && which !== "drums" && (
+            <button
+              type="button"
+              onClick={toggleTranspose}
+              title={`The recording is ${Math.abs(keyShift)} semitone${Math.abs(keyShift) === 1 ? "" : "s"} ${
+                keyShift > 0 ? "higher" : "lower"
+              } than this tab (pitch-shifted upload, capo or tuning). Click to transpose the tab to the recording — or tune your instrument ${Math.abs(keyShift)} semitone${
+                Math.abs(keyShift) === 1 ? "" : "s"
+              } ${keyShift > 0 ? "up" : "down"} and play it as written.`}
+              className={`shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold transition-colors ${
+                transposeOn
+                  ? "bg-[var(--accent)] text-accent-foreground"
+                  : "bg-amber-400/20 text-amber-600 hover:bg-amber-400/30 dark:text-amber-400"
+              }`}
+            >
+              ⇅ {keyShift > 0 ? "+" : ""}
+              {keyShift} st{transposeOn ? " ✓" : ""}
+            </button>
+          )}
           {!customTab && !useAiBass && !useGenBass && !match && result && (result.candidates?.length ?? 0) >= 2 && (
             <button
               type="button"
@@ -1150,6 +1288,21 @@ export function TabsPanel({ title }: { title: string }) {
                   className="rounded-md px-1.5 py-0.5 text-muted transition-colors hover:bg-surface hover:text-foreground disabled:opacity-40"
                 >
                   {hqProgress !== null ? `🎚️ ${hqProgress}%` : hqReady ? "🎚️ HQ ✓" : "🎚️ HQ"}
+                </button>
+              )}
+              {fixAvailable && (
+                <button
+                  type="button"
+                  disabled={aiState === "working"}
+                  onClick={toggleFix}
+                  title="Fix notes that contradict the recording: a note is changed only when the AI transcription AND the chord analysis both disagree with the tab. The number is how many notes were changed."
+                  className={`rounded-md px-1.5 py-0.5 transition-colors disabled:opacity-40 ${
+                    fixOn
+                      ? "bg-[var(--accent)] text-accent-foreground"
+                      : "text-muted hover:bg-surface hover:text-foreground"
+                  }`}
+                >
+                  {fixOn && aiState === "working" ? "🔧 …" : `🔧${fixOn && fixResult ? ` ${fixResult.fixed}` : ""}`}
                 </button>
               )}
             </div>
@@ -1388,6 +1541,7 @@ export function TabsPanel({ title }: { title: string }) {
             offsetSec={0}
             rate={1}
             onBarClick={pinMode ? pinBarAtPlayhead : undefined}
+            barScores={barScores}
           />
         </>
       ) : null}

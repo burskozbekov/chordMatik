@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyPins, beatSyncPoints, computeSyncPoints, subseqDtw } from "../tabSync";
+import { applyPins, beatQuantizeAnchors, beatSyncPoints, computeSyncPoints, subseqDtw } from "../tabSync";
 import type { SyncAnchor } from "../tabSync";
 import type { ChordSegment, SongsterrTrack } from "../types";
 
@@ -173,5 +173,127 @@ describe("applyPins (⚓ manual bar corrections)", () => {
     const out = applyPins(auto, { 1: 6000, 2: 4000 })!; // pin 2 earlier than pin 1 → ignored
     expect(out.find((p) => p.barIndex === 1)?.millisecondOffset).toBe(6000);
     expect(out.find((p) => p.barIndex === 2)).toBeUndefined();
+  });
+});
+
+// --- structure-aware alignment ------------------------------------------------
+const CHORUS = [9, 4, 11, 6]; // A E B F#
+const SOLO = [1, 8, 3, 10]; // C# G# D# A#
+const segsOf = (roots: number[], t0 = 0.5): ChordSegment[] =>
+  roots.map((r, i) => seg(r, t0 + i * SPB, t0 + (i + 1) * SPB));
+const barsOf = (roots: number[]) => roots.map((r) => bar(maj(r)));
+const at = (res: { points: SyncAnchor[] }, barIndex: number) =>
+  res.points.find((p) => p.barIndex === barIndex)?.millisecondOffset;
+
+describe("subseqDtw structural skips", () => {
+  it("jumps over a chorus the RECORDING repeats but the tab plays once", () => {
+    // audio: verse chorus chorus verse (16 segs) · tab: verse chorus verse (12 bars)
+    const A = [...PROG, ...CHORUS, ...CHORUS, ...PROG].map(chroma);
+    const B = [...PROG, ...CHORUS, ...PROG].map(chroma);
+    const r = subseqDtw(A, B);
+    expect(r.skippedAudio).toBe(4);
+    expect(r.skippedBars).toBe(0);
+    // Last verse (bars 8..11) sits on audio segments 12..15, not stretched over the repeat.
+    expect(r.path.find(([, j]) => j === 8)?.[0]).toBe(12);
+    expect(r.path.find(([, j]) => j === 11)?.[0]).toBe(15);
+    expect(r.avgCost).toBeLessThan(0.3);
+  });
+
+  it("jumps over a section the TAB has but the recording cut", () => {
+    // audio: verse verse (8 segs) · tab: verse solo verse (12 bars)
+    const A = [...PROG, ...PROG].map(chroma);
+    const B = [...PROG, ...SOLO, ...PROG].map(chroma);
+    const r = subseqDtw(A, B);
+    expect(r.skippedBars).toBe(4);
+    expect(r.path.find(([, j]) => j === 8)?.[0]).toBe(4);
+    expect(r.path.some(([, j]) => j >= 4 && j <= 7)).toBe(false);
+  });
+
+  it("skips can be disabled (legacy monotone behaviour)", () => {
+    const A = [...PROG, ...CHORUS, ...CHORUS, ...PROG].map(chroma);
+    const B = [...PROG, ...CHORUS, ...PROG].map(chroma);
+    const r = subseqDtw(A, B, { audioSkip: null, tabSkip: null });
+    expect(r.skippedAudio).toBe(0);
+    expect(r.path.length).toBeGreaterThanOrEqual(Math.max(A.length, B.length)); // monotone path covers all
+  });
+
+  it("does NOT skip a single misdetected chord — it is absorbed as before", () => {
+    const A = [...PROG, 3, ...PROG].map(chroma); // one stray D# segment
+    const B = [...PROG, ...PROG].map(chroma);
+    const r = subseqDtw(A, B);
+    expect(r.skippedAudio).toBe(0);
+  });
+});
+
+describe("computeSyncPoints with structural differences", () => {
+  it("anchors after a repeated chorus land on the recording's LAST verse", () => {
+    const segs = segsOf([...PROG, ...CHORUS, ...CHORUS, ...PROG]);
+    const res = computeSyncPoints(segs, track(barsOf([...PROG, ...CHORUS, ...PROG])));
+    expect(at(res, 8)).toBeCloseTo(500 + 12 * SPB * 1000, -2.5);
+    expect(at(res, 11)).toBeCloseTo(500 + 15 * SPB * 1000, -2.5);
+    expect(res.confidence).toBeGreaterThanOrEqual(0.45); // still trusted as a warp
+  });
+
+  it("a tab intro the recording lacks gets no anchors; bar 4 starts the song", () => {
+    const segs = segsOf([...PROG]);
+    const res = computeSyncPoints(segs, track(barsOf([...SOLO, ...PROG])));
+    expect(res.points[0].barIndex).toBe(4);
+    expect(at(res, 4)).toBeCloseTo(500, -2.5);
+  });
+});
+
+describe("beatQuantizeAnchors (structure from chords, timing from beats)", () => {
+  const anchor = (barIndex: number, sec: number): SyncAnchor => ({
+    barIndex,
+    barPosition: 0,
+    barOccurence: 0,
+    millisecondOffset: sec * 1000,
+  });
+  const grid = (ibi: number, n: number, t0 = 1.0) => Array.from({ length: n }, (_, i) => t0 + i * ibi);
+
+  it("fills the bars between sparse anchors by beat count and snaps anchors to beats", () => {
+    const beats = grid(0.5, 60); // 4/4 at 120 BPM → 2 s per bar, bar 0 at 1.0 s
+    const out = beatQuantizeAnchors([anchor(0, 1.08), anchor(4, 8.93), anchor(8, 17.0)], beats, 4, 12);
+    for (let b = 0; b <= 11; b++) {
+      expect(out.find((p) => p.barIndex === b)?.millisecondOffset).toBeCloseTo((1.0 + b * 2) * 1000, -1.5);
+    }
+  });
+
+  it("follows tempo drift between anchors", () => {
+    // Beats slow down: IBI grows 0.5 → 0.6 s across the track.
+    const beats: number[] = [];
+    let t = 1.0;
+    for (let i = 0; i < 40; i++) {
+      beats.push(t);
+      t += 0.5 + i * 0.0025;
+    }
+    const out = beatQuantizeAnchors([anchor(0, beats[0]), anchor(8, beats[32])], beats, 4, 9);
+    // Bar 4 = beat 16 exactly (not the linear midpoint between the two anchors).
+    expect(out.find((p) => p.barIndex === 4)?.millisecondOffset).toBeCloseTo(beats[16] * 1000, -1);
+    const linearMid = ((beats[0] + beats[32]) / 2) * 1000;
+    expect(Math.abs((out.find((p) => p.barIndex === 4)?.millisecondOffset ?? 0) - linearMid)).toBeGreaterThan(80);
+  });
+
+  it("recognises a tracker running at double the pulse", () => {
+    const beats = grid(0.25, 120); // 8 tracked beats per notated 4/4 bar
+    const out = beatQuantizeAnchors([anchor(0, 1.0), anchor(4, 9.0)], beats, 4, 8);
+    expect(out.find((p) => p.barIndex === 2)?.millisecondOffset).toBeCloseTo(5000, -1.5);
+    expect(out.find((p) => p.barIndex === 6)?.millisecondOffset).toBeCloseTo(13000, -1.5); // extrapolated at the same pulse
+  });
+
+  it("keeps only the end anchors of a span whose beats don't fit its bars (extra section)", () => {
+    const beats = grid(0.5, 80);
+    // bar 4 → bar 5 spans 12 s (a repeated section the tab lacks): 24 beats for 1 bar.
+    const out = beatQuantizeAnchors([anchor(0, 1.0), anchor(4, 9.0), anchor(5, 21.0), anchor(9, 29.0)], beats, 4, 10);
+    expect(out.find((p) => p.barIndex === 4)?.millisecondOffset).toBeCloseTo(9000, -1.5);
+    expect(out.find((p) => p.barIndex === 5)?.millisecondOffset).toBeCloseTo(21000, -1.5);
+    expect(out.find((p) => p.barIndex === 7)?.millisecondOffset).toBeCloseTo(25000, -1.5); // dense again after
+    const ms = out.map((p) => p.millisecondOffset);
+    expect([...ms].sort((a, b) => a - b)).toEqual(ms);
+  });
+
+  it("passes through when there are no beats", () => {
+    const pts = [anchor(0, 1), anchor(1, 3)];
+    expect(beatQuantizeAnchors(pts, [], 4, 2)).toBe(pts);
   });
 });

@@ -43,6 +43,7 @@ export function TabView({
   customTrackIndex = 0,
   onTracks,
   onBarClick,
+  barScores,
 }: {
   track?: SongsterrTrack | null;
   title?: string;
@@ -58,6 +59,9 @@ export function TabView({
   onTracks?: (names: string[]) => void;
   /** Fires with the BAR index the user clicked in the tab (⚓ pin-bar mode). */
   onBarClick?: (barIndex: number) => void;
+  /** Audio-verified bars: per-bar agreement 0–1 with the recording (null = no
+   *  verdict), drawn as a coloured strip above each bar. */
+  barScores?: (number | null)[] | null;
 }) {
   const elRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -83,6 +87,52 @@ export function TabView({
   rateRef.current = rate;
   const syncRef = useRef(syncPoints);
   syncRef.current = syncPoints;
+  const scoresRef = useRef<(number | null)[] | null>(barScores ?? null);
+  scoresRef.current = barScores ?? null;
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+
+  // Paint the audio-verified strips: one per bar, placed from AlphaTab's bar
+  // bounds (surface pixels, the same frame its own cursor uses), in an overlay
+  // that lives inside the AlphaTab element so it scrolls with the score.
+  const paintScores = () => {
+    const el = elRef.current;
+    const api = apiRef.current;
+    if (!el || !api) return;
+    let overlay = overlayRef.current;
+    if (!overlay || overlay.parentElement !== el) {
+      overlay = document.createElement("div");
+      overlay.style.position = "absolute";
+      overlay.style.left = "0";
+      overlay.style.top = "0";
+      overlay.style.pointerEvents = "none";
+      overlay.style.zIndex = "5";
+      el.appendChild(overlay);
+      overlayRef.current = overlay;
+    }
+    overlay.replaceChildren();
+    const scores = scoresRef.current;
+    const lookup = api.boundsLookup;
+    if (!scores || !lookup) return;
+    for (const sys of lookup.staffSystems) {
+      for (const mb of sys.bars) {
+        const s = scores[mb.index];
+        if (s == null) continue;
+        const b = mb.visualBounds;
+        const strip = document.createElement("div");
+        strip.style.position = "absolute";
+        strip.style.left = `${b.x}px`;
+        strip.style.top = `${Math.max(0, b.y - 7)}px`;
+        strip.style.width = `${Math.max(2, b.w - 2)}px`;
+        strip.style.height = "4px";
+        strip.style.borderRadius = "9999px";
+        strip.style.opacity = "0.9";
+        strip.style.pointerEvents = "auto";
+        strip.style.background = s >= 0.62 ? "var(--accent)" : s >= 0.45 ? "#f59e0b" : "#ef4444";
+        strip.title = `Bar ${mb.index + 1}: ${Math.round(s * 100)}% of its notes fit the chords the recording plays here`;
+        overlay.appendChild(strip);
+      }
+    }
+  };
 
   // Recording time (s) → tab time (s) fed to updatePosition.
   const mapTime = (t: number) => {
@@ -207,6 +257,8 @@ export function TabView({
         },
       });
       apiRef.current = api;
+      el.style.position = "relative"; // the verdict overlay is positioned inside it
+      api.postRenderFinished.on(paintScores);
       api.playerReady.on(wire);
       // ⚓ pin-bar mode: report which BAR the user clicked (beat → its bar index).
       api.beatMouseDown.on((beat) => {
@@ -373,6 +425,12 @@ export function TabView({
       /* */
     }
   }, [engine.isPlaying]);
+
+  // Repaint the verdict strips when the scores change (bounds are already there).
+  useEffect(() => {
+    paintScores();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [barScores]);
 
   // Re-apply sync anchors + re-seat the cursor when sync inputs change.
   useEffect(() => {

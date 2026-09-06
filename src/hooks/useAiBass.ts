@@ -54,6 +54,25 @@ export function useAiBass(
     }
   };
 
+  // Transcribe WITHOUT switching the bass source — for features that only need
+  // the notes (e.g. "fix with audio" on the Songsterr tab). Resolves true when
+  // notes are available.
+  const ensureNotes = async (): Promise<boolean> => {
+    if (aiNotes) return true;
+    if (aiState === "working" || !songPath) return false;
+    setAiState("working");
+    try {
+      if (!(await modelPresent("basic-pitch"))) await downloadModel("basic-pitch");
+      const notes = await transcribeBass(songPath);
+      setAiNotes(notes);
+      setAiState(notes.length ? "idle" : "error");
+      return notes.length > 0;
+    } catch {
+      setAiState("error");
+      return false;
+    }
+  };
+
   // Enable HQ: download the Demucs bass model (with progress) then (re)transcribe —
   // the isolated bass gives a much cleaner tab.
   const enableHq = async () => {
@@ -84,5 +103,5 @@ export function useAiBass(
     }
   };
 
-  return { aiNotes, aiState, hqReady, hqProgress, runAiBass, enableHq };
+  return { aiNotes, aiState, hqReady, hqProgress, runAiBass, enableHq, ensureNotes };
 }
