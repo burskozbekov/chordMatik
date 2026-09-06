@@ -55,6 +55,44 @@ if [ "$PKG_VERSION" != "$VERSION" ]; then
   exit 1
 fi
 
+# --- re-pack the (stapled) app for the updater ---------------------------------
+# The updater tarball must be rebuilt AFTER notarization/stapling, and it must
+# be built WITHOUT AppleDouble metadata: macOS `tar` writes a `._chordMatik.app`
+# entry for extended attributes, and the updater's Rust extractor fails on it
+# ("failed to unpack `._chordMatik.app`") — an update that downloads and then
+# silently never installs. COPYFILE_DISABLE=1 suppresses those entries.
+APP="${BUNDLE}/macos/chordMatik.app"
+xcrun stapler validate "$APP" >/dev/null 2>&1 || {
+  echo "❌ ${APP} is not stapled — notarize + staple first (UPDATER.md step 3)."
+  exit 1
+}
+rm -f "$TARBALL" "$SIG"
+COPYFILE_DISABLE=1 tar -C "${BUNDLE}/macos" -czf "$TARBALL" chordMatik.app
+# NOTE: macOS `tar tzf` HIDES AppleDouble entries when listing, so inspect the
+# raw archive with Python — that is how the 13 `._*` entries went unnoticed.
+python3 - "$TARBALL" <<'PY' || exit 1
+import sys, tarfile
+with tarfile.open(sys.argv[1]) as t:
+    names = [m.name for m in t]
+bad = [n for n in names if n.split("/")[-1].startswith("._")]
+if bad:
+    print(f"❌ updater tarball contains {len(bad)} AppleDouble (._) entries, e.g. {bad[0]} — the updater cannot extract it.")
+    sys.exit(1)
+if not names or not names[0].startswith("chordMatik.app"):
+    print("❌ updater tarball must contain chordMatik.app/ at its root.")
+    sys.exit(1)
+print(f"→ updater tarball: {len(names)} entries, no AppleDouble metadata")
+PY
+KEY_FILE="${TAURI_SIGNING_KEY_FILE:-$HOME/.tauri/chordmatik_updater.key}"
+if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+  [ -f "$KEY_FILE" ] || { echo "❌ updater signing key not found at ${KEY_FILE}"; exit 1; }
+  export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_FILE")"
+  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
+fi
+npx tauri signer sign "$TARBALL" >/dev/null
+[ -f "$SIG" ] || { echo "❌ signing the updater tarball failed (no ${SIG})"; exit 1; }
+echo "→ updater tarball re-packed from the stapled app + signed"
+
 # --- stable-named copy → permanent download link ------------------------------
 cp -f "$DMG" "$STABLE_DMG"
 

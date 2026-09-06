@@ -28,9 +28,10 @@ export function UpdateControl() {
     if (isTauri()) appInfo().then(setMeta).catch(() => {});
   }, []);
 
-  // Let a transient result fade back to the version button.
+  // Let "up to date" fade back to the version button. A FAILURE stays until the
+  // user clicks it (retry) — a 5-second flash was impossible to read or report.
   useEffect(() => {
-    if (s.phase !== "uptodate" && s.phase !== "error") return;
+    if (s.phase !== "uptodate") return;
     const t = window.setTimeout(clearUpdateResult, 5000);
     return () => window.clearTimeout(t);
   }, [s.phase]);
@@ -81,10 +82,10 @@ export function UpdateControl() {
       <button
         type="button"
         onClick={() => void runUpdateCheck(false)}
-        title={s.error ?? "Update check failed"}
+        title={`${s.error ?? "Update check failed"}\n\nClick to retry. Details are in ~/Library/Logs/com.chordmatik.app/updater.log`}
         className={`${base} text-danger hover:bg-surface-hover`}
       >
-        Check failed · retry
+        Update failed · retry
       </button>
     );
   }

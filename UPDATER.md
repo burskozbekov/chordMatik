@@ -75,12 +75,21 @@ a tag push alone no longer publishes anything.
    xcrun stapler staple dmg/*.dmg
    xcrun stapler staple macos/chordMatik.app
    ```
-4. Re-pack the **stapled** app for the updater and re-sign it:
+4. Re-pack the **stapled** app for the updater and re-sign it. **`publish-release.sh`
+   now does this itself** (and refuses to publish a bad tarball), so normally skip
+   to step 6. If you do it by hand, it MUST be:
    ```bash
    rm -f macos/chordMatik.app.tar.gz macos/chordMatik.app.tar.gz.sig
-   tar -C macos -czf macos/chordMatik.app.tar.gz chordMatik.app
+   COPYFILE_DISABLE=1 tar -C macos -czf macos/chordMatik.app.tar.gz chordMatik.app
    (cd ../../../.. && npx tauri signer sign src-tauri/target/release/bundle/macos/chordMatik.app.tar.gz)
    ```
+   **Why `COPYFILE_DISABLE=1`:** plain macOS `tar` stores extended attributes as
+   AppleDouble `._*` entries (`._chordMatik.app`, `Contents/._MacOS`, …). The
+   updater's Rust extractor fails on `._chordMatik.app` ("failed to unpack"), so
+   the update downloads and then never installs — this silently broke auto-update
+   for v0.1.3–v0.1.5 until 2026-09-06. `tar tzf` hides those entries when listing;
+   check with `python3 -c 'import tarfile,sys;print([m.name for m in tarfile.open(sys.argv[1]) if m.name.split("/")[-1].startswith("._")])' <tarball>`.
+   Every update attempt is logged to `~/Library/Logs/com.chordmatik.app/updater.log`.
    If you rebuild the DMG by hand from the stapled app, **codesign the DMG**
    (`codesign --force --sign "Developer ID Application: …" --timestamp <dmg>`)
    before notarizing it, or Gatekeeper rejects the DMG container itself.

@@ -729,6 +729,27 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output, Strin
     })
 }
 
+/// Append one line to the updater log (`~/Library/Logs/com.chordmatik.app/updater.log`).
+/// The update UI only shows a state for a few seconds; a persistent log is what
+/// lets a "the update never arrives" report be diagnosed from the user's Mac.
+#[tauri::command]
+pub fn updater_log(app: tauri::AppHandle, line: String) -> Result<(), String> {
+    use std::io::Write;
+    let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("updater.log"))
+        .map_err(|e| e.to_string())?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let version = app.package_info().version.to_string();
+    writeln!(f, "{ts} v{version} {}", line.trim()).map_err(|e| e.to_string())
+}
+
 /// Update yt-dlp in place: a Homebrew install gets `brew upgrade yt-dlp`, any
 /// other install yt-dlp's own `-U`. YouTube changes its player every few weeks
 /// and only a CURRENT yt-dlp keeps downloading — this is the real fix behind the

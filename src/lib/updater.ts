@@ -6,7 +6,14 @@
  * concern and both consumers live in different parts of the tree.
  */
 import { check, type Update } from "@tauri-apps/plugin-updater";
+import { invoke } from "@tauri-apps/api/core";
 import { isTauri } from "./tauri";
+
+/** Persistent trace of every update attempt (~/Library/Logs/com.chordmatik.app/updater.log). */
+function trace(line: string) {
+  if (!isTauri()) return;
+  invoke("updater_log", { line }).catch(() => {});
+}
 
 export type UpdatePhase =
   | "idle"
@@ -62,30 +69,46 @@ export async function runUpdateCheck(silent = false): Promise<void> {
   if (!isTauri() || busy) return;
   busy = true;
   set({ phase: "checking", error: null, progress: 0 });
+  trace(`check start (${silent ? "startup/periodic" : "manual"})`);
   try {
     const update: Update | null = await check();
     if (!update) {
+      trace("check: up to date");
       set({ phase: silent ? "idle" : "uptodate", version: null });
       return;
     }
+    trace(`check: update ${update.version} available (${update.date ?? "no date"})`);
     set({ phase: "downloading", version: update.version, progress: 0 });
 
     let downloaded = 0;
     let total = 0;
+    let lastPct = -1;
     await update.downloadAndInstall((e) => {
       if (e.event === "Started") {
         total = e.data.contentLength ?? 0;
+        trace(`download started (${total} bytes)`);
       } else if (e.event === "Progress") {
         downloaded += e.data.chunkLength;
-        if (total > 0) set({ progress: Math.min(1, downloaded / total) });
+        if (total > 0) {
+          set({ progress: Math.min(1, downloaded / total) });
+          const pct = Math.floor((downloaded / total) * 4) * 25;
+          if (pct !== lastPct) {
+            lastPct = pct;
+            trace(`download ${pct}%`);
+          }
+        }
       } else if (e.event === "Finished") {
+        trace("download finished, installing");
         set({ progress: 1 });
       }
     });
+    trace(`installed ${update.version} — applies on next launch`);
     set({ phase: "ready" });
   } catch (err) {
-    // An update failure must never block the app.
+    // An update failure must never block the app — but it must be visible and
+    // on record: the manual button shows it until dismissed, the log keeps it.
     console.warn("[updater] check/install failed:", err);
+    trace(`FAILED: ${String(err)}`);
     set({ phase: silent ? "idle" : "error", error: String(err) });
   } finally {
     busy = false;
