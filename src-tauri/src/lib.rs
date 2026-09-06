@@ -68,6 +68,7 @@ pub fn run() {
             commands::library_remove,
             commands::find_matching_audio,
             commands::download_youtube_audio,
+            commands::update_ytdlp,
             commands::fetch_tabs,
             commands::fetch_tab_track,
             commands::fetch_bass_tab,

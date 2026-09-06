@@ -29,6 +29,10 @@ export function AutoUpdater() {
   useEffect(() => {
     if (!isTauri()) return;
     void runUpdateCheck(true); // silent: no "up to date" / error noise on launch
+    // People leave the app open for days — check again every 6 hours so a new
+    // release still reaches them without a relaunch (the store dedupes runs).
+    const id = window.setInterval(() => void runUpdateCheck(true), 6 * 60 * 60 * 1000);
+    return () => window.clearInterval(id);
   }, []);
 
   // Auto-dismiss the "ready" pill (passive, not a prompt).

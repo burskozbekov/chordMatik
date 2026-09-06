@@ -326,6 +326,11 @@ export function downloadYoutubeAudio(videoId: string): Promise<YtAudio> {
   return invoke<YtAudio>("download_youtube_audio", { videoId });
 }
 
+/** Update yt-dlp in place (Homebrew upgrade, or yt-dlp -U). Resolves to the new version. */
+export function updateYtDlp(): Promise<string> {
+  return invoke<string>("update_ytdlp");
+}
+
 /** Delete temp audio (downloaded/captured WAVs) — call on close / next song. */
 export function cleanupTempAudio(): Promise<void> {
   return invoke<void>("cleanup_temp_audio");

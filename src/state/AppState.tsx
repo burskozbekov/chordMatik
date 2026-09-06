@@ -15,6 +15,7 @@ import { parseYouTubeId } from "../lib/youtube";
 import {
   analyzeChords,
   downloadYoutubeAudio,
+  updateYtDlp,
   fileName,
   isSupportedAudio,
   isTauri,
@@ -49,7 +50,7 @@ export interface MatchStatus {
 }
 
 /** Progress of fetching chords for a pasted YouTube link (download → analyze). */
-export type YtFetchState = "idle" | "downloading" | "analyzing" | "error";
+export type YtFetchState = "idle" | "updating" | "downloading" | "analyzing" | "error";
 
 /** A "set tab start from a chord" request: the recording time + which tab to show. */
 export interface TabStartRequest {
@@ -84,6 +85,8 @@ interface AppState {
   ytFetchState: YtFetchState;
   /** Error from the YouTube fetch, or null. */
   ytFetchError: string | null;
+  /** Update yt-dlp (the usual cause of a download 403) and retry the fetch. */
+  updateYtDlpAndRetry: () => Promise<void>;
   /** The loaded song's source video id (for the watch-along video), or null. */
   songVideoId: string | null;
   /** The song's best-known BPM (Songsterr/calibrated/detected); 0 = unknown. */
@@ -185,6 +188,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [matchStatus, setMatchStatus] = useState<MatchStatus>({ state: "idle" });
   const [ytFetchState, setYtFetchState] = useState<YtFetchState>("idle");
   const [ytFetchError, setYtFetchError] = useState<string | null>(null);
+  // Bumped to re-run the fetch effect for the SAME link (after a yt-dlp update).
+  const [ytRetry, setYtRetry] = useState(0);
   const [songVideoId, setSongVideoId] = useState<string | null>(null);
   // The song's best-known BPM + the time (s) of bar 1 / beat 1 (the manual-sync
   // start anchor), shared so the metronome + count-in lock to the song's rhythm.
@@ -596,7 +601,24 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [youtubeId, song, openPath]);
+    // ytRetry: a yt-dlp update clears ytFetchRef and bumps it to fetch again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [youtubeId, song, openPath, ytRetry]);
+
+  // The usual cause of "HTTP Error 403" is an outdated yt-dlp (YouTube changes
+  // its player every few weeks). Update it in place, then fetch the link again.
+  const updateYtDlpAndRetry = useCallback(async () => {
+    setYtFetchError(null);
+    setYtFetchState("updating");
+    try {
+      await updateYtDlp();
+      ytFetchRef.current = ""; // let the fetch effect run again for the same id
+      setYtRetry((n) => n + 1);
+    } catch (e) {
+      setYtFetchState("error");
+      setYtFetchError(`Couldn't update yt-dlp: ${typeof e === "string" ? e : String(e)}`);
+    }
+  }, []);
 
   // Stop live capture if the provider ever unmounts.
   useEffect(() => {
@@ -714,6 +736,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       syncOffset,
       ytFetchState,
       ytFetchError,
+      updateYtDlpAndRetry,
       songVideoId,
       songBpm,
       setSongBpm,
@@ -771,6 +794,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       syncOffset,
       ytFetchState,
       ytFetchError,
+      updateYtDlpAndRetry,
       songVideoId,
       songBpm,
       songStartSec,

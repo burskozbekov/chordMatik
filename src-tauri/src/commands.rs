@@ -729,6 +729,92 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output, Strin
     })
 }
 
+/// Update yt-dlp in place: a Homebrew install gets `brew upgrade yt-dlp`, any
+/// other install yt-dlp's own `-U`. YouTube changes its player every few weeks
+/// and only a CURRENT yt-dlp keeps downloading — this is the real fix behind the
+/// "HTTP Error 403" failure, offered as a button instead of a terminal trip.
+/// Returns the version that is installed afterwards.
+#[tauri::command]
+pub async fn update_ytdlp() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let base_path = std::env::var("PATH").unwrap_or_default();
+        let aug_path = format!("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:{base_path}");
+        let ytdlp = find_tool("yt-dlp")
+            .ok_or("yt-dlp is not installed. Install it with: brew install yt-dlp")?;
+        let brew = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+            .iter()
+            .map(PathBuf::from)
+            .find(|p| is_executable_file(p));
+        // A STANDALONE yt-dlp (the Mach-O release binary, self-updating via `-U`)
+        // can sit in /opt/homebrew/bin and shadow the Homebrew formula — seen on
+        // the owner's Mac: brew upgraded the Cellar but couldn't link over the
+        // stale binary, so the app kept running a June build and every download
+        // 403'd. Homebrew's yt-dlp is a `#!` Python script; a Mach-O file means
+        // standalone → use its own updater. Otherwise brew, and if brew's link
+        // step is blocked by a leftover file, `brew link --overwrite` resolves it.
+        let standalone = std::fs::File::open(&ytdlp)
+            .and_then(|mut f| {
+                let mut magic = [0u8; 2];
+                f.read_exact(&mut magic).map(|_| &magic != b"#!")
+            })
+            .unwrap_or(false);
+        let brew_managed = !standalone
+            && (ytdlp.starts_with("/opt/homebrew") || ytdlp.starts_with("/usr/local"));
+        match brew {
+            Some(brew) if brew_managed => {
+                let run_brew = |args: &[&str]| -> Result<Output, String> {
+                    let mut cmd = Command::new(&brew);
+                    cmd.env("PATH", &aug_path)
+                        .env("HOMEBREW_NO_ENV_HINTS", "1")
+                        .env("HOMEBREW_NO_INSTALL_CLEANUP", "1")
+                        .env("HOMEBREW_NO_INSTALL_UPGRADE", "1")
+                        .args(args);
+                    run_with_timeout(cmd, Duration::from_secs(900))
+                };
+                let out = run_brew(&["upgrade", "yt-dlp"])?;
+                if !out.status.success() {
+                    let err = String::from_utf8_lossy(&out.stderr).to_string();
+                    if err.contains("already exists") || err.contains("Could not symlink") {
+                        let link = run_brew(&["link", "--overwrite", "yt-dlp"])?;
+                        if !link.status.success() {
+                            return Err(format!(
+                                "brew link --overwrite yt-dlp failed: {}",
+                                String::from_utf8_lossy(&link.stderr).trim()
+                            ));
+                        }
+                    } else if !err.contains("already installed") {
+                        // Nothing to upgrade is reported as a warning, not a failure.
+                        let last = err
+                            .lines()
+                            .filter(|l| l.contains("Error"))
+                            .last()
+                            .unwrap_or(err.trim())
+                            .to_string();
+                        return Err(format!("brew upgrade yt-dlp failed: {last}"));
+                    }
+                }
+            }
+            _ => {
+                let mut cmd = Command::new(&ytdlp);
+                cmd.env("PATH", &aug_path).arg("-U");
+                let out = run_with_timeout(cmd, Duration::from_secs(300))?;
+                if !out.status.success() {
+                    return Err(format!(
+                        "yt-dlp -U failed: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ));
+                }
+            }
+        }
+        let mut v = Command::new(&ytdlp);
+        v.env("PATH", &aug_path).arg("--version");
+        let out = run_with_timeout(v, Duration::from_secs(30))?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    })
+    .await
+    .map_err(|e| format!("update task failed: {e}"))?
+}
+
 /// A downloaded YouTube video (mp4, played locally) + a WAV extracted from it
 /// for on-device chord analysis + the title.
 #[derive(Serialize)]

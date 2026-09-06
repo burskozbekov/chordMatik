@@ -11,12 +11,16 @@ import { CARD_HTML, LOADER_CSS } from "./loaderCss";
  * percentage. The animation is imperative (built into a ref div); cleaned up on
  * unmount. No embedded player.
  */
+/** A download failure whose usual cause is an outdated yt-dlp. */
+const looksLikeStaleYtDlp = (msg: string | null) =>
+  /yt-dlp|403|forbidden|sign in to confirm|nsig|not a bot/i.test(msg ?? "");
+
 export function FetchingState() {
-  const { ytFetchState, ytFetchError, openDialog, reset } = useAppState();
+  const { ytFetchState, ytFetchError, openDialog, reset, updateYtDlpAndRetry } = useAppState();
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (ytFetchState === "error") return;
+    if (ytFetchState === "error" || ytFetchState === "updating") return;
     const root = rootRef.current;
     if (!root) return;
     root.innerHTML = CARD_HTML;
@@ -27,7 +31,20 @@ export function FetchingState() {
     };
   }, [ytFetchState]);
 
+  if (ytFetchState === "updating") {
+    return (
+      <div className="glass mx-auto flex w-full max-w-md flex-col items-center gap-4 rounded-3xl px-8 py-10 text-center shadow-overlay">
+        <span className="size-9 animate-spin rounded-full border-[3px] border-brand-sky/25 border-t-brand-sky" />
+        <div>
+          <p className="text-base font-semibold text-foreground">Updating yt-dlp…</p>
+          <p className="mt-1 text-sm text-muted">About a minute, then the download retries.</p>
+        </div>
+      </div>
+    );
+  }
+
   if (ytFetchState === "error") {
+    const stale = looksLikeStaleYtDlp(ytFetchError);
     return (
       <div className="glass mx-auto flex w-full max-w-md flex-col items-center gap-4 rounded-3xl px-8 py-10 text-center shadow-overlay">
         <div className="grid size-14 place-items-center rounded-2xl bg-danger/12 text-danger">
@@ -39,8 +56,13 @@ export function FetchingState() {
             {ytFetchError ?? "Try another link, or open the song’s audio file."}
           </p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="primary" size="md" onPress={reset}>
+        <div className="flex flex-wrap justify-center gap-2">
+          {stale && (
+            <Button variant="primary" size="md" onPress={() => void updateYtDlpAndRetry()}>
+              Update yt-dlp
+            </Button>
+          )}
+          <Button variant={stale ? "outline" : "primary"} size="md" onPress={reset}>
             Back
           </Button>
           <Button variant="outline" size="md" onPress={openDialog}>

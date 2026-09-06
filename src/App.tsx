@@ -36,7 +36,8 @@ export default function App() {
     onOverChange: setDragOver,
   });
 
-  const fetching = ytFetchState === "downloading" || ytFetchState === "analyzing";
+  const fetching =
+    ytFetchState === "updating" || ytFetchState === "downloading" || ytFetchState === "analyzing";
 
   return (
     <div className="flex h-screen flex-col overflow-hidden">
