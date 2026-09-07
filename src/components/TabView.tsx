@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import * as alphaTab from "@coderline/alphatab";
+import { EndHold, SeekGate, createFollowerTransport } from "../lib/tabFollower";
 import { songsterrToScore, type TabKind } from "../lib/songsterrToScore";
 import { useAppState } from "../state/AppState";
 import type { SongsterrTrack } from "../lib/types";
@@ -76,11 +77,13 @@ export function TabView({
   onBarClickRef.current = onBarClick;
   const outputRef = useRef<ExtOutput | null>(null);
   const wiredRef = useRef(false);
-  // While re-rendering/re-laying-out a score, AlphaTab resets its player to bar 1
-  // and would pause/seek our engine via the handler — suppress that so playback
-  // continues. A DEADLINE (not a boolean) so overlapping render+notation toggles
-  // can't un-suppress each other early.
-  const suppressUntilRef = useRef(0);
+  // AlphaTab is a FOLLOWER — our engine owns the transport (policy + rationale
+  // in lib/tabFollower.ts): a seek passes only inside a beat-click window, its
+  // play/pause requests are inert, and past the tab's end the cursor is parked
+  // instead of AlphaTab's stop() rewinding the song.
+  const gateRef = useRef(new SeekGate());
+  const holdRef = useRef(new EndHold());
+  const lastPushedMsRef = useRef(0);
   const offsetRef = useRef(offsetSec);
   offsetRef.current = offsetSec;
   const rateRef = useRef(rate);
@@ -183,16 +186,11 @@ export function TabView({
           return engineRef.current.playbackRate || 1;
         },
         masterVolume: 1,
-        seekTo: (ms: number) => {
-          if (Date.now() >= suppressUntilRef.current)
-            engineRef.current.seek(ms / 1000 + offsetRef.current);
-        },
-        play: () => {
-          if (Date.now() >= suppressUntilRef.current) engineRef.current.play();
-        },
-        pause: () => {
-          if (Date.now() >= suppressUntilRef.current) engineRef.current.pause();
-        },
+        ...createFollowerTransport(gateRef.current, holdRef.current, {
+          now: Date.now,
+          offsetSec: () => offsetRef.current,
+          seek: (sec) => engineRef.current.seek(sec),
+        }),
       };
 
       let lastT = -1;
@@ -207,9 +205,22 @@ export function TabView({
         // less to extrapolate between updates (less visible drift/stutter).
         const throttle = engineRef.current.playbackRate > 1.05 ? 20 : 40;
         if (!jumped && now - lastPush < throttle) return;
+        const ms = mapTime(t) * 1000;
+        // Tab over but the song plays on → cursor stays parked on the last beat;
+        // following resumes once the user is back before the end.
+        const verdict = holdRef.current.next(ms);
+        if (verdict === "hold") return;
+        if (verdict === "resume") {
+          try {
+            if (engineRef.current.isPlaying) a.play();
+          } catch {
+            /* */
+          }
+        }
         lastPush = now;
+        lastPushedMsRef.current = ms;
         try {
-          output.updatePosition(mapTime(t) * 1000);
+          output.updatePosition(ms);
         } catch {
           /* */
         }
@@ -261,13 +272,46 @@ export function TabView({
       api.postRenderFinished.on(paintScores);
       api.playerReady.on(wire);
       // ⚓ pin-bar mode: report which BAR the user clicked (beat → its bar index).
+      // A click is also the ONE thing allowed to seek the audio. AlphaTab seeks
+      // on mouse-UP (before it raises beatMouseUp), so the window opens on
+      // mouse-down wide enough for a long press and is closed by the release.
       api.beatMouseDown.on((beat) => {
+        gateRef.current.press(Date.now());
         try {
           const barIndex = beat?.voice?.bar?.index;
           if (typeof barIndex === "number") onBarClickRef.current?.(barIndex);
         } catch {
           /* */
         }
+      });
+      api.beatMouseUp.on(() => {
+        gateRef.current.release(Date.now());
+        // A drag across beats makes AlphaTab a playback RANGE, and it would then
+        // "finish" (stop + rewind) every time the cursor passed the range end.
+        // Our engine owns looping (A–B), so never keep AlphaTab's.
+        try {
+          if (api.playbackRange) api.playbackRange = null;
+        } catch {
+          /* */
+        }
+      });
+      // AlphaTab reached the tab's end → it calls stop() (pause + tick 0). The
+      // handler ignores that, but the cursor would still snap to bar 1 while the
+      // song keeps going: park it just before the end and stop feeding positions
+      // (EndHold, consulted in the subscribe loop).
+      api.playerFinished.on(() => {
+        const park = holdRef.current.finished(lastPushedMsRef.current);
+        if (park == null) return;
+        // finished fires BEFORE AlphaTab's stop() rewinds to tick 0 — re-park
+        // on the next tick so the park position is what survives.
+        window.setTimeout(() => {
+          if (!holdRef.current.holding) return;
+          try {
+            outputRef.current?.updatePosition(park);
+          } catch {
+            /* */
+          }
+        }, 0);
       });
       // Report a custom-loaded file's track names (for the track picker).
       api.scoreLoaded.on((score) => {
@@ -319,7 +363,7 @@ export function TabView({
   useEffect(() => {
     const api = apiRef.current;
     if (!api) return;
-    suppressUntilRef.current = Date.now() + 450;
+    holdRef.current.reset();
     try {
       // Switching instrument (kind) re-renders here (NOT a remount, so playback
       // keeps running) — apply the right staves for the new instrument first.
@@ -383,7 +427,6 @@ export function TabView({
     }
     const api = apiRef.current;
     if (!api) return;
-    suppressUntilRef.current = Date.now() + 450;
     try {
       api.settings.display.staveProfile = profileFor(kind, notation);
     } catch {
@@ -435,8 +478,12 @@ export function TabView({
   // Re-apply sync anchors + re-seat the cursor when sync inputs change.
   useEffect(() => {
     const score = scoreRef.current;
+    holdRef.current.reset(); // a new grid moves the tab's end — re-evaluate it
     try {
       score?.applyFlatSyncPoints(syncPoints ?? []);
+      // NOTE: updateSyncPoints() makes AlphaTab re-seek the media to its own
+      // mapping — the handler drops that (not a user click); we re-seat the
+      // cursor from the ENGINE's position instead, so the audio never moves.
       apiRef.current?.updateSyncPoints();
       outputRef.current?.updatePosition(mapTime(engineRef.current.getTime()) * 1000);
     } catch {

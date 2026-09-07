@@ -520,11 +520,13 @@ export function TabsPanel({ title }: { title: string }) {
   }, [syncResult, useGenBass, useAiBass]);
 
   // Upgrade an untouched auto-seeded start to the aligned tab entry. A start the
-  // user has moved (≠ the recorded seed) is never overridden. NEVER while playing:
-  // chord analysis can finish late, and moving the start (esp. the manual grid)
-  // mid-song would visibly yank the cursor — defer until playback stops.
+  // user has moved (≠ the recorded seed) is never overridden. Applied as soon as
+  // the alignment is known — even mid-song: only the CURSOR re-seats (the audio
+  // never moves, TabView drops AlphaTab's re-seek). Deferring it to the next
+  // pause made the grid shift exactly when the user pressed Space, which read as
+  // "the tab jumps around when I stop".
   useEffect(() => {
-    if (alignedStartSec == null || !syncKey || engine.isPlaying) return;
+    if (alignedStartSec == null || !syncKey) return;
     const seed = autoSeedRef.current;
     if (!seed || seed.key !== syncKey) return;
     // Epsilon below the finest (Shift = 1 ms) nudge, so ANY manual move counts.
@@ -532,7 +534,7 @@ export function TabsPanel({ title }: { title: string }) {
     if (Math.abs(alignedStartSec - startSec) < 0.0005) return; // already there
     autoSeedRef.current = { key: syncKey, value: alignedStartSec };
     setStartSec(alignedStartSec);
-  }, [alignedStartSec, syncKey, startSec, engine.isPlaying]);
+  }, [alignedStartSec, syncKey, startSec]);
 
   // Drifts mode: refine the chord warp with chroma-frame DTW (Rust, async).
   // Skipped for generated/AI bass — their warp is discarded anyway (see `warp`),
